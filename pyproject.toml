@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Market-basket analysis and cross-sell engine for a B2B distributor (synthetic data, algorithms from scratch)"
 authors = [{ name = "Dimitres Kisimov" }]
 readme = "README.md"
-license = { file = "LICENSE" }
+license = { text = "Proprietary" }
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",

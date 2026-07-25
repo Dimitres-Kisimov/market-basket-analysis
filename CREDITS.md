@@ -1,6 +1,7 @@
 # Credits
 
-All application code in this repository was written for this project. The algorithms
+All application code in this repository was written for this project — © 2026 Dimitres Kisimov,
+all rights reserved; third-party libraries remain under their own licenses. The algorithms
 are re-implementations of published methods:
 
 - **Apriori** -- R. Agrawal, R. Srikant, "Fast Algorithms for Mining Association

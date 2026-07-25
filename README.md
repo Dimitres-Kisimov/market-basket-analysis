@@ -99,4 +99,4 @@ deliverables, and a GitHub Actions workflow that runs the same gates.
   are noise-prone.
 - **Estimates are labelled.** Any EUR uplift figure carries its assumption inline.
 
-More context in [docs/BUSINESS_CASE.md](docs/BUSINESS_CASE.md). MIT licensed.
+More context in [docs/BUSINESS_CASE.md](docs/BUSINESS_CASE.md). © 2026 Dimitres Kisimov — all rights reserved; published for portfolio review. See LICENSE.

@@ -51,17 +51,51 @@ recovered with lift >= 1.5 (tested).
   baseline rate, multiplied by the category's average line value. Real attach rates
   would have to come from an A/B test.
 
+## Rule stability -- which rules are trustworthy, not just high-lift?
+
+A high lift on the full dataset is not the same as a *repeatable* pattern. So the
+pipeline re-mines itself: it re-runs the exact same Apriori + rule-scoring pipeline,
+at the same thresholds, across **4 contiguous time windows** (baskets carry no
+timestamp, so basket arrival order is used as a documented proxy for time) and,
+optionally, across seeded bootstrap resamples. For each of the **top 20 rules by
+lift** it reports a *stability score* -- the fraction of windows in which the rule
+still clears support >= 2%, confidence >= 30% and lift >= 1.10 -- plus how far the
+lift moves across windows.
+
+Measured (seed 42, 6,000 orders, 4 time windows):
+
+- **18 of the top 20 rules are stable** -- they reappear above all three thresholds
+  in every window. The flagship *fasteners + ppe_gloves -> power_tools* is one of
+  them (lift 2.32 in the full data; per-window lift 2.19-2.55).
+- **2 are flagged window-specific**, appearing in only 3 of the 4 windows:
+  *pipe_fittings + storage_handling -> adhesives_sealants* (lift 2.27) and
+  *janitorial + ppe_eyewear -> welding_supplies* (lift 2.20). Both sit at ~2.15%
+  support -- just above the 2% floor -- so in a single 1,500-order window they slip
+  under the count threshold. They look as strong as the rest by lift alone; the
+  stability check is what separates them.
+
+Honest caveat: the synthetic generator is **stationary** (every basket is drawn from
+the same distribution), so durable rules are *expected* to persist and the flicker
+above is sampling noise near the threshold, not real drift. The value here is twofold
+-- it validates the machinery, and on real order history (where demand drifts and
+promotions come and go) the identical check would separate durable rules from
+seasonal or one-off artefacts. Outputs: `deliverables/rule_stability.csv`,
+`deliverables/rule_stability.svg`, a "Stability" sheet in the workbook, and a
+stability page in the PDF.
+
 ## How to run it
 
 Python 3.10+ with numpy, pandas, matplotlib, openpyxl (see `requirements.txt`).
 
 ```bash
 pip install -r requirements.txt
-python -m basket                  # console summary: rules, segments, recommendations
-python -m basket --deliverables   # writes deliverables/cross_sell_briefing.pdf
-                                  #    and deliverables/market_basket_analysis.xlsx
+python -m basket                  # console summary: rules, segments, recommendations,
+                                  #    and the rule-stability read
+python -m basket --deliverables   # writes deliverables/cross_sell_briefing.pdf,
+                                  #    market_basket_analysis.xlsx, rule_stability.csv
+                                  #    and rule_stability.svg
 python -m ruff check .            # lint (clean)
-python -m pytest -q               # 18 tests (green)
+python -m pytest -q               # 28 tests (green)
 ```
 
 Everything is reproducible: same seed, same numbers. `--seed`, `--baskets`,
@@ -79,6 +113,9 @@ deliverables, and a GitHub Actions workflow that runs the same gates.
   recursive mining over conditional pattern bases. Tested equal to Apriori.
 - `basket/rules.py` -- support, confidence, lift, leverage, conviction; filtering,
   lift ranking, and a thin-support flag for rules backed by too few orders.
+- `basket/stability.py` -- robustness trust layer: re-mines the top rules across
+  time windows or seeded bootstrap folds (reusing Apriori + rule scoring) and scores
+  how consistently each rule clears the thresholds; writes a CSV and a hand-drawn SVG.
 - `basket/segment.py` -- k-means with k-means++ seeding, restarts and empty-cluster
   repair, run on spend shares so large customers don't dominate.
 - `basket/recommend.py` -- rules to a cross-sell action list plus a next-best-product

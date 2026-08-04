@@ -27,6 +27,12 @@ from basket.data import AVG_LINE_VALUE_EUR, baskets_from_transactions, generate_
 from basket.recommend import ASSUMPTION_NOTE, Recommendation, cross_sell_recommendations
 from basket.rules import Rule, format_itemset, format_rule, generate_rules
 from basket.segment import Segmentation, segment_customers
+from basket.stability import (
+    StabilityReport,
+    rule_stability,
+    write_stability_csv,
+    write_stability_svg,
+)
 
 DISCLAIMER = (
     "SYNTHETIC DATA: all figures come from a seeded simulation built for this "
@@ -36,6 +42,11 @@ CAUSATION_NOTE = (
     "Lift is observational: correlation is not causation. Validate any "
     "cross-sell action with a controlled test before scaling it."
 )
+
+# Defaults for the stability deliverable (rule-robustness trust layer).
+STABILITY_METHOD = "time_window"
+STABILITY_N_SPLITS = 4
+STABILITY_TOP_N = 20
 
 # Chart chrome and palette (validated defaults; light surface).
 _INK = "#0b0b0b"
@@ -95,6 +106,26 @@ def run_analysis(
         min_support=min_support,
         min_confidence=min_confidence,
         min_lift=min_lift,
+    )
+
+
+def build_stability_report(
+    result: AnalysisResult,
+    method: str = STABILITY_METHOD,
+    n_splits: int = STABILITY_N_SPLITS,
+    top_n: int = STABILITY_TOP_N,
+) -> StabilityReport:
+    """Robustness check for the mined rules, reusing this run's thresholds."""
+    return rule_stability(
+        result.baskets,
+        result.rules,
+        method=method,
+        n_splits=n_splits,
+        top_n=top_n,
+        min_support=result.min_support,
+        min_confidence=result.min_confidence,
+        min_lift=result.min_lift,
+        seed=result.seed,
     )
 
 
@@ -305,13 +336,76 @@ def _segments_page(pdf: PdfPages, result: AnalysisResult) -> None:
     pdf.savefig(fig)
 
 
-def export_pdf(result: AnalysisResult, path: str) -> None:
-    """Write the four-page executive PDF."""
+def _stability_page(
+    pdf: PdfPages, report: StabilityReport, max_rows: int = 20
+) -> None:
+    method_phrase = (
+        f"{report.n_splits} contiguous time windows (basket arrival order)"
+        if report.method == "time_window"
+        else f"{report.n_splits} seeded bootstrap resamples"
+    )
+    fig = _new_page(
+        "Rule stability (robustness check)",
+        f"Top {report.top_n} rules re-mined across {method_phrase}. A rule is "
+        "STABLE only if it clears every threshold in every split.",
+    )
+    fig.text(
+        0.06, 0.855, report.plain_language(),
+        fontsize=9.5, color=_INK, va="top", wrap=True,
+    )
+    ax = fig.add_axes((0.05, 0.09, 0.90, 0.70))
+    ax.axis("off")
+    header = ["Rule", "Lift", "Support", "Stability", "Splits", "Lift CV", "Verdict"]
+    body = []
+    for item in report.rules[:max_rows]:
+        body.append(
+            [
+                item.label,
+                f"{item.reference_lift:.2f}",
+                f"{item.reference_support:.1%}",
+                f"{item.stability_score:.0%}",
+                f"{item.n_present}/{item.n_splits}",
+                f"{item.lift_cv:.2f}",
+                "stable" if item.stable else "check",
+            ]
+        )
+    table = ax.table(
+        cellText=body,
+        colLabels=header,
+        loc="upper center",
+        cellLoc="center",
+        colWidths=[0.42, 0.07, 0.09, 0.10, 0.08, 0.09, 0.10],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.5)
+    table.scale(1.0, 1.2)
+    stable_flags = [item.stable for item in report.rules[:max_rows]]
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor(_GRID)
+        if row == 0:
+            cell.set_text_props(fontweight="bold", color=_INK)
+            cell.set_facecolor(_NEUTRAL_FILL)
+            continue
+        cell.set_text_props(color=_INK_SECONDARY)
+        if col == 6:  # verdict column: green when stable, amber when not
+            cell.set_facecolor("#e3f0e0" if stable_flags[row - 1] else "#faedcf")
+        else:
+            cell.set_facecolor(_SURFACE)
+    pdf.savefig(fig)
+
+
+def export_pdf(
+    result: AnalysisResult, path: str, stability_report: StabilityReport | None = None
+) -> None:
+    """Write the five-page executive PDF (adds the rule-stability page)."""
+    if stability_report is None:
+        stability_report = build_stability_report(result)
     with PdfPages(path) as pdf:
         _cover_page(pdf, result)
         _rules_page(pdf, result)
         _heatmap_page(pdf, result)
         _segments_page(pdf, result)
+        _stability_page(pdf, stability_report)
 
 
 def _style_header(sheet: Worksheet, row: int, n_columns: int) -> None:
@@ -328,8 +422,12 @@ def _set_widths(sheet: Worksheet, widths: list[int]) -> None:
         sheet.column_dimensions[get_column_letter(i)].width = width
 
 
-def export_excel(result: AnalysisResult, path: str) -> None:
-    """Write the analyst workbook: Rules, Itemsets, Segments, Recommendations."""
+def export_excel(
+    result: AnalysisResult, path: str, stability_report: StabilityReport | None = None
+) -> None:
+    """Write the analyst workbook: Rules, Itemsets, Segments, Recommendations, Stability."""
+    if stability_report is None:
+        stability_report = build_stability_report(result)
     workbook = Workbook()
 
     sheet = workbook.active
@@ -433,6 +531,44 @@ def export_excel(result: AnalysisResult, path: str) -> None:
     _set_widths(sheet, [6, 30, 22, 8, 11, 24, 110])
     sheet.freeze_panes = "A5"
 
+    sheet = workbook.create_sheet("Stability")
+    sheet.append([DISCLAIMER])
+    sheet.append([CAUSATION_NOTE])
+    sheet.append([stability_report.plain_language()])
+    sheet.append([])
+    stability_header_row = 5
+    sheet.append(
+        [
+            "Rank", "Rule", "Ref lift", "Ref confidence", "Ref support", "Ref orders",
+            "Splits", "Present", "Stability score", "Lift mean", "Lift std", "Lift CV",
+            "Lift min", "Lift max", "Stable", "Method",
+        ]
+    )
+    for rank, item in enumerate(stability_report.rules, start=1):
+        sheet.append(
+            [
+                rank,
+                item.label,
+                round(item.reference_lift, 3),
+                round(item.reference_confidence, 4),
+                round(item.reference_support, 4),
+                item.reference_support_count,
+                item.n_splits,
+                item.n_present,
+                round(item.stability_score, 4),
+                round(item.lift_mean, 4),
+                round(item.lift_std, 4),
+                round(item.lift_cv, 4),
+                round(item.lift_min, 4),
+                round(item.lift_max, 4),
+                "YES" if item.stable else "",
+                stability_report.method,
+            ]
+        )
+    _style_header(sheet, stability_header_row, 16)
+    _set_widths(sheet, [6, 46, 9, 14, 11, 10, 8, 9, 14, 10, 9, 9, 9, 9, 8, 12])
+    sheet.freeze_panes = f"A{stability_header_row + 1}"
+
     workbook.save(path)
 
 
@@ -453,15 +589,27 @@ def write_deliverables(
         min_lift=min_lift,
     )
     os.makedirs(output_dir, exist_ok=True)
+    stability_report = build_stability_report(result)
     pdf_path = os.path.join(output_dir, "cross_sell_briefing.pdf")
     excel_path = os.path.join(output_dir, "market_basket_analysis.xlsx")
-    export_pdf(result, pdf_path)
-    export_excel(result, excel_path)
+    csv_path = os.path.join(output_dir, "rule_stability.csv")
+    svg_path = os.path.join(output_dir, "rule_stability.svg")
+    export_pdf(result, pdf_path, stability_report)
+    export_excel(result, excel_path, stability_report)
+    write_stability_csv(stability_report, csv_path)
+    write_stability_svg(stability_report, svg_path)
 
     sizes: dict[str, int] = {}
-    for path in (pdf_path, excel_path):
+    # The PDF and workbook are substantial; the stability CSV/SVG are small but
+    # must be non-trivial. Verify each against its own floor.
+    for path, floor in (
+        (pdf_path, 10_000),
+        (excel_path, 10_000),
+        (csv_path, 200),
+        (svg_path, 200),
+    ):
         size = os.path.getsize(path)
-        if size <= 10_000:
+        if size <= floor:
             raise RuntimeError(f"deliverable too small ({size} bytes): {path}")
         sizes[path] = size
     return sizes

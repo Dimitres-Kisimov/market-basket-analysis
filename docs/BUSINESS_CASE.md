@@ -77,5 +77,10 @@ Mine the order history for association rules and act on the strongest ones:
   numbers and disclaimer, top-rules table, category-pair lift heatmap, segment
   profiles.
 - `deliverables/market_basket_analysis.xlsx` -- working file for analysts: all 254
-  rules with full metrics, all 224 itemsets, segment assignments per customer, and
-  the ranked recommendation list with the estimate assumption spelled out per row.
+  rules with full metrics, all 224 itemsets, segment assignments per customer, the
+  ranked recommendation list with the estimate assumption spelled out per row, and a
+  Stability sheet scoring how well the top rules persist across splits.
+- `deliverables/rule_stability.csv` + `deliverables/rule_stability.svg` -- the
+  robustness read-out: for the top 20 rules by lift, the fraction of time windows in
+  which each rule still clears every threshold (18 of 20 stable on the default run),
+  so a reviewer can tell durable patterns from window-specific ones before acting.

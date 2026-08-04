@@ -12,7 +12,12 @@ from __future__ import annotations
 import argparse
 import sys
 
-from basket.exports import DISCLAIMER, run_analysis, write_deliverables
+from basket.exports import (
+    DISCLAIMER,
+    build_stability_report,
+    run_analysis,
+    write_deliverables,
+)
 from basket.rules import format_rule
 
 
@@ -51,6 +56,16 @@ def _print_summary(args: argparse.Namespace) -> None:
     print("Top cross-sell recommendations (observational; correlation != causation):")
     for recommendation in result.recommendations[:3]:
         print(f"  - {recommendation.headline}")
+    print()
+    stability = build_stability_report(result)
+    print("Rule stability (robustness check across time splits):")
+    print(f"  {stability.plain_language()}")
+    for item in stability.rules:
+        if not item.stable:
+            print(
+                f"  - window-specific: {item.label} "
+                f"(in {item.n_present}/{item.n_splits} windows, lift {item.reference_lift:.2f})"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(DISCLAIMER)
         for path, size in sizes.items():
-            print(f"wrote {path} ({size:,} bytes; verified > 10 KB)")
+            print(f"wrote {path} ({size:,} bytes; verified non-empty)")
         return 0
 
     _print_summary(args)

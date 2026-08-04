@@ -17,6 +17,13 @@ from basket.fpgrowth import fpgrowth
 from basket.recommend import cross_sell_recommendations, next_best_product
 from basket.rules import Rule, generate_rules
 from basket.segment import kmeans, segment_customers
+from basket.stability import (
+    RuleStability,
+    StabilityReport,
+    bootstrap_splits,
+    rule_stability,
+    time_window_splits,
+)
 
 __version__ = "1.0.0"
 
@@ -25,8 +32,11 @@ __all__ = [
     "CATEGORIES",
     "PLANTED_BUNDLES",
     "Rule",
+    "RuleStability",
+    "StabilityReport",
     "apriori",
     "baskets_from_transactions",
+    "bootstrap_splits",
     "cross_sell_recommendations",
     "fpgrowth",
     "generate_rules",
@@ -34,5 +44,7 @@ __all__ = [
     "kmeans",
     "next_best_product",
     "planted_pairs",
+    "rule_stability",
     "segment_customers",
+    "time_window_splits",
 ]

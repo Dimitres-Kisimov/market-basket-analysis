@@ -1,6 +1,11 @@
 from basket.apriori import apriori
 from basket.data import AVG_LINE_VALUE_EUR, CATEGORIES
-from basket.recommend import cross_sell_recommendations, next_best_product
+from basket.recommend import (
+    applicable_rules,
+    cross_sell_recommendations,
+    next_best_product,
+    rank_cross_sell_categories,
+)
 from basket.rules import generate_rules
 
 
@@ -33,3 +38,33 @@ def test_next_best_product(baskets):
     assert recommendation.rule.consequent.isdisjoint(current)
     # A basket that already contains every category has nothing left to add.
     assert next_best_product(set(CATEGORIES), rules) is None
+
+
+def test_rank_cross_sell_categories(baskets):
+    rules = _rules(baskets)
+    best_rule = next(rule for rule in rules if not rule.thin_support)
+    current = set(best_rule.antecedent)
+    ranked = rank_cross_sell_categories(current, rules, top_k=5)
+    assert 1 <= len(ranked) <= 5
+    assert len(ranked) == len(set(ranked))  # de-duplicated
+    for category in ranked:
+        assert category not in current  # never suggests what is already there
+    # The single next-best product is the head of the ranked list (same ranking).
+    single = next_best_product(current, rules)
+    assert single is not None
+    assert ranked[0] in single.rule.consequent
+    # An all-category basket has nothing to add.
+    assert rank_cross_sell_categories(set(CATEGORIES), rules) == []
+
+
+def test_applicable_rules_filters_and_thin_support():
+    baskets = [["A", "B"]] * 5 + [["A"], ["B"]]
+    itemsets = apriori(baskets, min_support=0.2, max_len=2)
+    # thin_support_count=1 keeps rules; =100 flags them all as thin.
+    kept = generate_rules(itemsets, len(baskets), min_confidence=0.3, min_lift=0.5, thin_support_count=1)
+    thin = generate_rules(itemsets, len(baskets), min_confidence=0.3, min_lift=0.5, thin_support_count=100)
+    assert applicable_rules(["A"], kept)  # A -> B fires
+    assert not applicable_rules(["A"], thin)  # thin rules excluded by default
+    assert applicable_rules(["A"], thin, include_thin_support=True)
+    # Nothing to add once the consequent is already present.
+    assert not applicable_rules(["A", "B"], kept)

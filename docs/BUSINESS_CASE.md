@@ -59,6 +59,12 @@ Mine the order history for association rules and act on the strongest ones:
   controlled experiment measures true incremental revenue. The pilot design is:
   randomize qualifying orders 50/50, serve rule-driven suggestions to treatment,
   measure attach rate and basket value, decide on the measured difference.
+- **Offline evidence the engine predicts, before spending on the test.** A
+  leave-one-out back-test on held-out baskets (rules mined on the earlier 70%,
+  tested on the later 30%) recovers a hidden category in 60.2% of cases within the
+  top-3 suggestions, versus 34.4% for a popularity baseline -- 1.75x the baseline
+  hit-rate (MRR 0.455 vs 0.311). *Predictive fit on synthetic data, not causal
+  uplift; it de-risks the pilot, it does not replace it.*
 
 ## Stakeholders
 
@@ -73,14 +79,19 @@ Mine the order history for association rules and act on the strongest ones:
 
 `python -m basket --deliverables` produces, reproducibly:
 
-- `deliverables/cross_sell_briefing.pdf` -- four-page executive briefing: headline
+- `deliverables/cross_sell_briefing.pdf` -- six-page executive briefing: headline
   numbers and disclaimer, top-rules table, category-pair lift heatmap, segment
-  profiles.
+  profiles, a rule-stability page and a recommender back-test page.
 - `deliverables/market_basket_analysis.xlsx` -- working file for analysts: all 254
   rules with full metrics, all 224 itemsets, segment assignments per customer, the
-  ranked recommendation list with the estimate assumption spelled out per row, and a
-  Stability sheet scoring how well the top rules persist across splits.
+  ranked recommendation list with the estimate assumption spelled out per row, a
+  Stability sheet scoring how well the top rules persist across splits, and an
+  Evaluation sheet with the recommender back-test metrics.
 - `deliverables/rule_stability.csv` + `deliverables/rule_stability.svg` -- the
   robustness read-out: for the top 20 rules by lift, the fraction of time windows in
   which each rule still clears every threshold (18 of 20 stable on the default run),
   so a reviewer can tell durable patterns from window-specific ones before acting.
+- `deliverables/recommender_backtest.csv` + `deliverables/recommender_backtest.svg`
+  -- the predictive-accuracy read-out: hit-rate@K, MRR and coverage for the rule
+  recommender against a popularity baseline on held-out baskets, so a reviewer can
+  see the engine beats a trivial control before commissioning the A/B test.

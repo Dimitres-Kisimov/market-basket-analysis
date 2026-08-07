@@ -14,6 +14,10 @@ are re-implementations of published methods:
 - **k-means** -- S. Lloyd's algorithm (1957/1982) with **k-means++** seeding from
   D. Arthur, S. Vassilvitskii, "k-means++: The Advantages of Careful Seeding",
   SODA 2007.
+- **Recommender back-test metrics** (leave-one-out hit-rate@K, mean reciprocal
+  rank) -- standard top-N recommender / information-retrieval evaluation; hit-rate
+  top-N eval after M. Deshpande, G. Karypis, "Item-Based Top-N Recommendation
+  Algorithms", ACM TOIS 2004, and MRR after E. Voorhees, TREC-8 QA Track, 1999.
 
 Open-source libraries used (as dependencies, not sources of algorithm code):
 

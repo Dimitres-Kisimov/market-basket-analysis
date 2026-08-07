@@ -76,6 +76,59 @@ def cross_sell_recommendations(
     return recommendations
 
 
+def applicable_rules(
+    current_basket: Iterable[str],
+    rules: Iterable[Rule],
+    include_thin_support: bool = False,
+) -> list[Rule]:
+    """Rules that fire on a basket in progress, ranked highest-lift first.
+
+    A rule is applicable when its antecedent is already fully in the basket and
+    its consequent is entirely absent (there is something new to suggest). Thin
+    -support rules are excluded unless ``include_thin_support`` is set. The order
+    matches :func:`basket.rules.generate_rules` (lift, then confidence, then a
+    stable itemset tie-break), so callers get a deterministic ranking.
+    """
+    basket = frozenset(current_basket)
+    matched = [
+        rule
+        for rule in rules
+        if (include_thin_support or not rule.thin_support)
+        and rule.antecedent <= basket
+        and rule.consequent.isdisjoint(basket)
+    ]
+    matched.sort(
+        key=lambda r: (-r.lift, -r.confidence, format_itemset(r.antecedent), format_itemset(r.consequent))
+    )
+    return matched
+
+
+def rank_cross_sell_categories(
+    current_basket: Iterable[str],
+    rules: Iterable[Rule],
+    top_k: int = 5,
+    include_thin_support: bool = False,
+) -> list[str]:
+    """Top-``top_k`` distinct categories to cross-sell into a basket in progress.
+
+    Walks the applicable rules highest-lift first and collects their consequent
+    categories, de-duplicated and skipping anything already in the basket, until
+    ``top_k`` are gathered. This is the multi-suggestion generalisation of
+    :func:`next_best_product` and the ranking the recommender back-test scores.
+    """
+    if top_k < 1:
+        raise ValueError("top_k must be positive")
+    basket = frozenset(current_basket)
+    ranked: list[str] = []
+    for rule in applicable_rules(basket, rules, include_thin_support):
+        for category in sorted(rule.consequent):
+            if category not in basket and category not in ranked:
+                ranked.append(category)
+                if len(ranked) >= top_k:
+                    return ranked
+    return ranked
+
+
 def next_best_product(
     current_basket: Iterable[str],
     rules: Sequence[Rule],
@@ -88,13 +141,7 @@ def next_best_product(
     rule applies.
     """
     basket = frozenset(current_basket)
-    applicable = [
-        rule
-        for rule in rules
-        if not rule.thin_support
-        and rule.antecedent <= basket
-        and rule.consequent.isdisjoint(basket)
-    ]
+    applicable = applicable_rules(basket, rules)
     if not applicable:
         return None
     best = max(applicable, key=lambda r: (r.lift, r.confidence))

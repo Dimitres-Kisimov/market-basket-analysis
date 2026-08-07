@@ -14,6 +14,7 @@ import sys
 
 from basket.exports import (
     DISCLAIMER,
+    build_evaluation_report,
     build_stability_report,
     run_analysis,
     write_deliverables,
@@ -66,6 +67,21 @@ def _print_summary(args: argparse.Namespace) -> None:
                 f"  - window-specific: {item.label} "
                 f"(in {item.n_present}/{item.n_splits} windows, lift {item.reference_lift:.2f})"
             )
+    print()
+    evaluation = build_evaluation_report(result)
+    ratio = evaluation.hit_rate_ratio()
+    print("Recommender back-test (leave-one-out predictive accuracy):")
+    print(f"  {evaluation.plain_language()}")
+    header_k = "  ".join(f"hit@{k}" for k in evaluation.k_values)
+    print(f"                        {header_k}    MRR   coverage")
+    rules_hits = "  ".join(f"{evaluation.rules.hit_rate[k]:5.1%}" for k in evaluation.k_values)
+    pop_hits = "  ".join(f"{evaluation.popularity.hit_rate[k]:5.1%}" for k in evaluation.k_values)
+    print(f"  association rules     {rules_hits}   {evaluation.rules.mrr:.3f}   "
+          f"{evaluation.rules.coverage:.1%}")
+    print(f"  popularity baseline   {pop_hits}   {evaluation.popularity.mrr:.3f}   "
+          f"{evaluation.popularity.coverage:.1%}")
+    ratio_str = "  ".join(f"{ratio[k]:4.2f}x" for k in evaluation.k_values)
+    print(f"  rules / baseline      {ratio_str}")
 
 
 def main(argv: list[str] | None = None) -> int:

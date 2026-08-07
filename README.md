@@ -83,6 +83,43 @@ seasonal or one-off artefacts. Outputs: `deliverables/rule_stability.csv`,
 `deliverables/rule_stability.svg`, a "Stability" sheet in the workbook, and a
 stability page in the PDF.
 
+## Recommender back-test -- does the cross-sell engine actually predict?
+
+Stability asks whether a rule is *durable*; it does not ask whether the
+recommender *predicts what a customer buys next*. So the pipeline back-tests the
+recommender the way you would evaluate any top-N recommender: **leave-one-out on
+held-out baskets**. Rules are mined on the first 70% of baskets by arrival order
+(the same documented time proxy used for stability); for every basket in the
+later 30% that has at least two categories, one category is hidden, the rest are
+fed to the recommender, and I check whether the hidden category comes back in the
+top-K. The identical trials are scored for a **popularity baseline** (recommend
+the most-frequent training categories not already in the basket) so the rules'
+predictive value is *measured against a trivial control*, not asserted.
+
+Measured (seed 42, 6,000 orders, 70/30 arrival-order split, 4,200 train / 1,800
+test, 1,594 eligible test baskets):
+
+| Recommender | hit-rate@1 | hit-rate@3 | hit-rate@5 | MRR | coverage |
+|---|---|---|---|---|---|
+| **Association rules** | 30.4% | **60.2%** | 69.9% | **0.455** | 99.9% |
+| Popularity baseline | 20.1% | 34.4% | 56.2% | 0.311 | 100% |
+| Rules / baseline | 1.51x | **1.75x** | 1.24x | 1.46x | -- |
+
+The rule recommender recovers the held-out category in **60.2% of cases within
+its top 3**, versus **34.4%** for popularity -- **1.75x** the baseline hit-rate --
+and ranks the true next item higher on average (MRR 0.455 vs 0.311). It fires on
+99.9% of test baskets (a rule matched; the rest fall through to nothing).
+
+Honest reading: this is **predictive fit on stationary synthetic data**, not the
+causal revenue a campaign would earn -- only an A/B test measures that (the
+recommendations page already says so). Because the generator draws every basket
+from one distribution, the arrival-order split is not a real train-then-future
+shift; its job here is to validate the evaluation harness and quantify how far the
+rules beat popularity. On real order history the identical back-test would report
+how well last quarter's rules predict this quarter's baskets. Outputs:
+`deliverables/recommender_backtest.csv`, `deliverables/recommender_backtest.svg`,
+an "Evaluation" sheet in the workbook, and a back-test page in the PDF.
+
 ## How to run it
 
 Python 3.10+ with numpy, pandas, matplotlib, openpyxl (see `requirements.txt`).
@@ -92,10 +129,11 @@ pip install -r requirements.txt
 python -m basket                  # console summary: rules, segments, recommendations,
                                   #    and the rule-stability read
 python -m basket --deliverables   # writes deliverables/cross_sell_briefing.pdf,
-                                  #    market_basket_analysis.xlsx, rule_stability.csv
-                                  #    and rule_stability.svg
+                                  #    market_basket_analysis.xlsx, rule_stability.csv,
+                                  #    rule_stability.svg, recommender_backtest.csv
+                                  #    and recommender_backtest.svg
 python -m ruff check .            # lint (clean)
-python -m pytest -q               # 28 tests (green)
+python -m pytest -q               # 42 tests (green)
 ```
 
 Everything is reproducible: same seed, same numbers. `--seed`, `--baskets`,
@@ -118,11 +156,17 @@ deliverables, and a GitHub Actions workflow that runs the same gates.
   how consistently each rule clears the thresholds; writes a CSV and a hand-drawn SVG.
 - `basket/segment.py` -- k-means with k-means++ seeding, restarts and empty-cluster
   repair, run on spend shares so large customers don't dominate.
-- `basket/recommend.py` -- rules to a cross-sell action list plus a next-best-product
-  lookup for a basket in progress.
-- `basket/exports.py` -- a four-page executive PDF (cover with disclaimer, rules
-  table, category-pair lift heatmap, segment profiles) and a four-sheet Excel
-  workbook (Rules, Itemsets, Segments, Recommendations).
+- `basket/recommend.py` -- rules to a cross-sell action list, a ranked top-K
+  next-best-category function, and a single next-best-product lookup for a basket
+  in progress.
+- `basket/evaluate.py` -- recommender back-test: a leave-one-out, held-out-basket
+  evaluation (reusing Apriori + rule scoring) that measures hit-rate@K, MRR and
+  coverage for the rule recommender against a popularity baseline; writes a CSV and
+  a hand-drawn SVG.
+- `basket/exports.py` -- a six-page executive PDF (cover with disclaimer, rules
+  table, category-pair lift heatmap, segment profiles, rule-stability page,
+  recommender back-test page) and a six-sheet Excel workbook (Rules, Itemsets,
+  Segments, Recommendations, Stability, Evaluation).
 
 ## Honesty notes
 

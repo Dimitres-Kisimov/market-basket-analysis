@@ -24,6 +24,12 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from basket.apriori import apriori
 from basket.data import AVG_LINE_VALUE_EUR, baskets_from_transactions, generate_transactions
+from basket.evaluate import (
+    EvaluationReport,
+    evaluate_recommenders,
+    write_evaluation_csv,
+    write_evaluation_svg,
+)
 from basket.recommend import ASSUMPTION_NOTE, Recommendation, cross_sell_recommendations
 from basket.rules import Rule, format_itemset, format_rule, generate_rules
 from basket.segment import Segmentation, segment_customers
@@ -47,6 +53,10 @@ CAUSATION_NOTE = (
 STABILITY_METHOD = "time_window"
 STABILITY_N_SPLITS = 4
 STABILITY_TOP_N = 20
+
+# Defaults for the recommender back-test deliverable (predictive-accuracy layer).
+EVALUATION_TRAIN_FRACTION = 0.7
+EVALUATION_K_VALUES: tuple[int, ...] = (1, 3, 5)
 
 # Chart chrome and palette (validated defaults; light surface).
 _INK = "#0b0b0b"
@@ -122,6 +132,23 @@ def build_stability_report(
         method=method,
         n_splits=n_splits,
         top_n=top_n,
+        min_support=result.min_support,
+        min_confidence=result.min_confidence,
+        min_lift=result.min_lift,
+        seed=result.seed,
+    )
+
+
+def build_evaluation_report(
+    result: AnalysisResult,
+    train_fraction: float = EVALUATION_TRAIN_FRACTION,
+    k_values: tuple[int, ...] = EVALUATION_K_VALUES,
+) -> EvaluationReport:
+    """Leave-one-out recommender back-test, reusing this run's thresholds/seed."""
+    return evaluate_recommenders(
+        result.baskets,
+        train_fraction=train_fraction,
+        k_values=k_values,
         min_support=result.min_support,
         min_confidence=result.min_confidence,
         min_lift=result.min_lift,
@@ -394,18 +421,83 @@ def _stability_page(
     pdf.savefig(fig)
 
 
+def _evaluation_page(pdf: PdfPages, report: EvaluationReport) -> None:
+    fig = _new_page(
+        "Cross-sell recommender back-test",
+        f"Leave-one-out on {report.n_trials} held-out baskets: rules mined on "
+        f"{report.n_train} training baskets predict a hidden category vs a popularity "
+        "baseline. Hit-rate is predictive fit -- not the causal uplift of an A/B test.",
+    )
+    fig.text(
+        0.06, 0.855, report.plain_language(),
+        fontsize=9.5, color=_INK, va="top", wrap=True,
+    )
+    ax = fig.add_axes((0.06, 0.30, 0.88, 0.46))
+    ax.axis("off")
+    ratio = report.hit_rate_ratio()
+    header = ["Metric", "Association rules", "Popularity baseline", "Rules / baseline"]
+    body = []
+    for k in report.k_values:
+        body.append(
+            [
+                f"Hit-rate@{k}",
+                f"{report.rules.hit_rate[k]:.1%}",
+                f"{report.popularity.hit_rate[k]:.1%}",
+                f"{ratio[k]:.2f}x",
+            ]
+        )
+    mrr_ratio = report.rules.mrr / report.popularity.mrr if report.popularity.mrr else 0.0
+    body.append(["MRR", f"{report.rules.mrr:.3f}", f"{report.popularity.mrr:.3f}", f"{mrr_ratio:.2f}x"])
+    body.append(
+        ["Coverage", f"{report.rules.coverage:.1%}", f"{report.popularity.coverage:.1%}", "-"]
+    )
+    table = ax.table(
+        cellText=body,
+        colLabels=header,
+        loc="upper center",
+        cellLoc="center",
+        colWidths=[0.22, 0.26, 0.26, 0.20],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9.5)
+    table.scale(1.0, 1.7)
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor(_GRID)
+        if row == 0:
+            cell.set_text_props(fontweight="bold", color=_INK)
+            cell.set_facecolor(_NEUTRAL_FILL)
+        else:
+            cell.set_text_props(color=_INK_SECONDARY)
+            cell.set_facecolor("#e6effa" if col == 1 else _SURFACE)
+    fig.text(
+        0.06, 0.20,
+        f"Setup: arrival-order split at {report.train_fraction:.0%} (train earlier, "
+        f"test later); one category hidden per test basket (seed {report.seed}); "
+        f"{report.n_rules} rules mined on train at the run's thresholds. "
+        "Popularity baseline = most-frequent training categories not already in the basket.",
+        fontsize=8.5, color=_INK_MUTED, va="top", wrap=True,
+    )
+    pdf.savefig(fig)
+
+
 def export_pdf(
-    result: AnalysisResult, path: str, stability_report: StabilityReport | None = None
+    result: AnalysisResult,
+    path: str,
+    stability_report: StabilityReport | None = None,
+    evaluation_report: EvaluationReport | None = None,
 ) -> None:
-    """Write the five-page executive PDF (adds the rule-stability page)."""
+    """Write the six-page executive PDF (stability + recommender back-test pages)."""
     if stability_report is None:
         stability_report = build_stability_report(result)
+    if evaluation_report is None:
+        evaluation_report = build_evaluation_report(result)
     with PdfPages(path) as pdf:
         _cover_page(pdf, result)
         _rules_page(pdf, result)
         _heatmap_page(pdf, result)
         _segments_page(pdf, result)
         _stability_page(pdf, stability_report)
+        _evaluation_page(pdf, evaluation_report)
 
 
 def _style_header(sheet: Worksheet, row: int, n_columns: int) -> None:
@@ -423,11 +515,16 @@ def _set_widths(sheet: Worksheet, widths: list[int]) -> None:
 
 
 def export_excel(
-    result: AnalysisResult, path: str, stability_report: StabilityReport | None = None
+    result: AnalysisResult,
+    path: str,
+    stability_report: StabilityReport | None = None,
+    evaluation_report: EvaluationReport | None = None,
 ) -> None:
-    """Write the analyst workbook: Rules, Itemsets, Segments, Recommendations, Stability."""
+    """Write the analyst workbook: Rules, Itemsets, Segments, Recommendations, Stability, Evaluation."""
     if stability_report is None:
         stability_report = build_stability_report(result)
+    if evaluation_report is None:
+        evaluation_report = build_evaluation_report(result)
     workbook = Workbook()
 
     sheet = workbook.active
@@ -569,6 +666,68 @@ def export_excel(
     _set_widths(sheet, [6, 46, 9, 14, 11, 10, 8, 9, 14, 10, 9, 9, 9, 9, 8, 12])
     sheet.freeze_panes = f"A{stability_header_row + 1}"
 
+    sheet = workbook.create_sheet("Evaluation")
+    sheet.append([DISCLAIMER])
+    sheet.append([CAUSATION_NOTE])
+    sheet.append([evaluation_report.plain_language()])
+    sheet.append([])
+    evaluation_header_row = 5
+    k_labels = [f"Hit-rate@{k}" for k in evaluation_report.k_values]
+    sheet.append(["Recommender", "Trials", *k_labels, "MRR", "Coverage"])
+
+    def _hit_cells(metrics: object) -> list:
+        return [round(metrics.hit_rate[k], 4) for k in evaluation_report.k_values]
+
+    sheet.append(
+        [
+            "Association rules",
+            evaluation_report.rules.n_trials,
+            *_hit_cells(evaluation_report.rules),
+            round(evaluation_report.rules.mrr, 4),
+            round(evaluation_report.rules.coverage, 4),
+        ]
+    )
+    sheet.append(
+        [
+            "Popularity baseline",
+            evaluation_report.popularity.n_trials,
+            *_hit_cells(evaluation_report.popularity),
+            round(evaluation_report.popularity.mrr, 4),
+            round(evaluation_report.popularity.coverage, 4),
+        ]
+    )
+    ratio = evaluation_report.hit_rate_ratio()
+    mrr_ratio = (
+        evaluation_report.rules.mrr / evaluation_report.popularity.mrr
+        if evaluation_report.popularity.mrr
+        else 0.0
+    )
+    sheet.append(
+        [
+            "Rules / baseline (ratio)",
+            "",
+            *[round(ratio[k], 3) for k in evaluation_report.k_values],
+            round(mrr_ratio, 3),
+            "",
+        ]
+    )
+    _style_header(sheet, evaluation_header_row, 5 + len(evaluation_report.k_values))
+    settings_row = evaluation_header_row + 4
+    sheet.append([])
+    sheet.append(
+        [
+            "Setup",
+            f"arrival-order split {evaluation_report.train_fraction:.0%} train / "
+            f"{1 - evaluation_report.train_fraction:.0%} test; one category hidden per "
+            f"test basket (seed {evaluation_report.seed}); "
+            f"{evaluation_report.n_rules} rules mined on "
+            f"{evaluation_report.n_train} training baskets; popularity baseline = "
+            "most-frequent training categories not already in the basket.",
+        ]
+    )
+    sheet.cell(row=settings_row + 1, column=1).font = Font(bold=True)
+    _set_widths(sheet, [26, 12, 12, 12, 12, 12, 12])
+
     workbook.save(path)
 
 
@@ -590,23 +749,30 @@ def write_deliverables(
     )
     os.makedirs(output_dir, exist_ok=True)
     stability_report = build_stability_report(result)
+    evaluation_report = build_evaluation_report(result)
     pdf_path = os.path.join(output_dir, "cross_sell_briefing.pdf")
     excel_path = os.path.join(output_dir, "market_basket_analysis.xlsx")
     csv_path = os.path.join(output_dir, "rule_stability.csv")
     svg_path = os.path.join(output_dir, "rule_stability.svg")
-    export_pdf(result, pdf_path, stability_report)
-    export_excel(result, excel_path, stability_report)
+    eval_csv_path = os.path.join(output_dir, "recommender_backtest.csv")
+    eval_svg_path = os.path.join(output_dir, "recommender_backtest.svg")
+    export_pdf(result, pdf_path, stability_report, evaluation_report)
+    export_excel(result, excel_path, stability_report, evaluation_report)
     write_stability_csv(stability_report, csv_path)
     write_stability_svg(stability_report, svg_path)
+    write_evaluation_csv(evaluation_report, eval_csv_path)
+    write_evaluation_svg(evaluation_report, eval_svg_path)
 
     sizes: dict[str, int] = {}
-    # The PDF and workbook are substantial; the stability CSV/SVG are small but
+    # The PDF and workbook are substantial; the CSV/SVG read-outs are small but
     # must be non-trivial. Verify each against its own floor.
     for path, floor in (
         (pdf_path, 10_000),
         (excel_path, 10_000),
         (csv_path, 200),
         (svg_path, 200),
+        (eval_csv_path, 200),
+        (eval_svg_path, 200),
     ):
         size = os.path.getsize(path)
         if size <= floor:

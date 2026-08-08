@@ -120,6 +120,48 @@ how well last quarter's rules predict this quarter's baskets. Outputs:
 `deliverables/recommender_backtest.csv`, `deliverables/recommender_backtest.svg`,
 an "Evaluation" sheet in the workbook, and a back-test page in the PDF.
 
+## Category affinity network -- which categories belong together as a group?
+
+Rules answer "given X in the basket, offer Y next". A category manager asks a
+coarser question: **which categories form natural groups** -- for bundles,
+planogram adjacency and the promo calendar? So the pipeline turns the frequent
+category pairs Apriori already mined into a lift-weighted co-purchase graph
+(every frequent pair with lift >= 1.10 becomes an edge, weighted by its excess
+over independence) and partitions it with greedy modularity maximisation
+(Newman 2004) -- implemented from scratch like everything else, deterministic
+with lexicographic tie-breaks.
+
+Measured (seed 42, 6,000 orders): the 14 categories connect through **27
+edges** and split into **3 communities** (weighted modularity **0.58**, no
+category left ungrouped):
+
+| Community | Categories | Internal edges | Avg / max lift |
+|---|---|---|---|
+| 0 (fabrication-shaped) | abrasives, cutting tools, lubricants, ppe eyewear, welding supplies | 7 | 1.47 / 2.20 |
+| 1 (construction-shaped) | fasteners, hand tools, power tools, ppe gloves, storage handling | 10 | 1.39 / 1.85 |
+| 2 (MRO-shaped) | adhesives sealants, electrical, janitorial, pipe fittings | 6 | 1.59 / 2.10 |
+
+Two structural findings worth calling out:
+
+- **All four planted bundles land inside a single community each** (tested),
+  and the three communities mirror the three k-means segments -- two
+  independent methods (spend-share clustering per *customer*, modularity on
+  the co-purchase graph per *order*) recover the same three-way structure.
+- **4 edges are BRIDGES between communities**, the strongest being
+  *electrical -- lubricants* (lift 1.40, 599 orders): lubricants sits in the
+  fabrication community but is also co-bought with maintenance categories.
+  Bridges are cross-merchandising candidates -- links across assortment
+  groups -- rather than within-group bundle material.
+
+Honest caveats: on this synthetic data the communities largely rediscover the
+generator's three customer archetypes -- that is the point (it validates the
+machinery against known structure), not a discovery about real customers. And
+greedy modularity is a heuristic grouping: it maximises one objective locally,
+so a different objective or algorithm could group differently. Outputs:
+`deliverables/affinity_network.csv` (edge list with community assignments),
+`deliverables/affinity_network.svg` (node-link network drawing), a "Network"
+sheet in the workbook and a communities page in the PDF.
+
 ## How to run it
 
 Python 3.10+ with numpy, pandas, matplotlib, openpyxl (see `requirements.txt`).
@@ -130,10 +172,11 @@ python -m basket                  # console summary: rules, segments, recommenda
                                   #    and the rule-stability read
 python -m basket --deliverables   # writes deliverables/cross_sell_briefing.pdf,
                                   #    market_basket_analysis.xlsx, rule_stability.csv,
-                                  #    rule_stability.svg, recommender_backtest.csv
-                                  #    and recommender_backtest.svg
+                                  #    rule_stability.svg, recommender_backtest.csv,
+                                  #    recommender_backtest.svg, affinity_network.csv
+                                  #    and affinity_network.svg
 python -m ruff check .            # lint (clean)
-python -m pytest -q               # 42 tests (green)
+python -m pytest -q               # 55 tests (green)
 ```
 
 Everything is reproducible: same seed, same numbers. `--seed`, `--baskets`,
@@ -163,10 +206,15 @@ deliverables, and a GitHub Actions workflow that runs the same gates.
   evaluation (reusing Apriori + rule scoring) that measures hit-rate@K, MRR and
   coverage for the rule recommender against a popularity baseline; writes a CSV and
   a hand-drawn SVG.
-- `basket/exports.py` -- a six-page executive PDF (cover with disclaimer, rules
-  table, category-pair lift heatmap, segment profiles, rule-stability page,
-  recommender back-test page) and a six-sheet Excel workbook (Rules, Itemsets,
-  Segments, Recommendations, Stability, Evaluation).
+- `basket/affinity.py` -- category affinity network: lift-weighted co-purchase
+  graph from the mined frequent pairs, community detection by greedy weighted
+  modularity maximisation (Newman 2004) with deterministic tie-breaks, bridge
+  edges between communities; writes a CSV and a hand-drawn node-link SVG.
+- `basket/exports.py` -- a seven-page executive PDF (cover with disclaimer, rules
+  table, category-pair lift heatmap, affinity-communities page, segment profiles,
+  rule-stability page, recommender back-test page) and a seven-sheet Excel
+  workbook (Rules, Itemsets, Segments, Recommendations, Stability, Evaluation,
+  Network).
 
 ## Honesty notes
 

@@ -18,6 +18,11 @@ are re-implementations of published methods:
   rank) -- standard top-N recommender / information-retrieval evaluation; hit-rate
   top-N eval after M. Deshpande, G. Karypis, "Item-Based Top-N Recommendation
   Algorithms", ACM TOIS 2004, and MRR after E. Voorhees, TREC-8 QA Track, 1999.
+- **Community detection** -- weighted modularity from M. E. J. Newman, M. Girvan,
+  "Finding and evaluating community structure in networks", Phys. Rev. E 69,
+  026113 (2004); greedy agglomerative maximisation after M. E. J. Newman, "Fast
+  algorithm for detecting community structure in networks", Phys. Rev. E 69,
+  066133 (2004).
 
 Open-source libraries used (as dependencies, not sources of algorithm code):
 

@@ -22,6 +22,12 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from basket.affinity import (
+    AffinityReport,
+    affinity_network,
+    write_affinity_csv,
+    write_affinity_svg,
+)
 from basket.apriori import apriori
 from basket.data import AVG_LINE_VALUE_EUR, baskets_from_transactions, generate_transactions
 from basket.evaluate import (
@@ -57,6 +63,10 @@ STABILITY_TOP_N = 20
 # Defaults for the recommender back-test deliverable (predictive-accuracy layer).
 EVALUATION_TRAIN_FRACTION = 0.7
 EVALUATION_K_VALUES: tuple[int, ...] = (1, 3, 5)
+
+# The affinity network needs non-negative edge weights (lift - 1), so its edge
+# threshold is the run's min lift floored at 1.0.
+NETWORK_MIN_LIFT_FLOOR = 1.0
 
 # Chart chrome and palette (validated defaults; light surface).
 _INK = "#0b0b0b"
@@ -153,6 +163,16 @@ def build_evaluation_report(
         min_confidence=result.min_confidence,
         min_lift=result.min_lift,
         seed=result.seed,
+    )
+
+
+def build_affinity_report(result: AnalysisResult) -> AffinityReport:
+    """Category affinity network + communities, reusing this run's mined itemsets."""
+    return affinity_network(
+        result.itemsets,
+        result.n_baskets,
+        min_support=result.min_support,
+        min_lift=max(NETWORK_MIN_LIFT_FLOOR, result.min_lift),
     )
 
 
@@ -324,6 +344,95 @@ def _heatmap_page(pdf: PdfPages, result: AnalysisResult) -> None:
     pdf.savefig(fig)
 
 
+def _network_page(pdf: PdfPages, report: AffinityReport) -> None:
+    fig = _new_page(
+        "Category affinity communities (co-purchase network)",
+        f"{report.n_nodes} categories, {report.n_edges} lift-weighted edges (pair "
+        f"support >= {report.min_support:.0%}, lift >= {report.min_lift:.2f}), grouped "
+        "by greedy modularity. Assortment structure, observational -- not causation.",
+    )
+    fig.text(
+        0.06, 0.855, report.plain_language(),
+        fontsize=9.5, color=_INK, va="top", wrap=True,
+    )
+    ax = fig.add_axes((0.05, 0.42, 0.90, 0.36))
+    ax.axis("off")
+    header = ["Community", "Categories", "Size", "Edges", "Avg lift", "Max lift", "Top internal pair"]
+    body = []
+    for community in report.communities:
+        top_pair = (
+            f"{community.top_edge.label} ({community.top_edge.lift:.2f})"
+            if community.top_edge is not None
+            else "-"
+        )
+        body.append(
+            [
+                f"{community.community_id}",
+                ", ".join(m.replace("_", " ") for m in community.members),
+                f"{community.n_members}",
+                f"{community.n_internal_edges}",
+                f"{community.lift_mean:.2f}" if community.n_internal_edges else "-",
+                f"{community.lift_max:.2f}" if community.n_internal_edges else "-",
+                top_pair,
+            ]
+        )
+    table = ax.table(
+        cellText=body,
+        colLabels=header,
+        loc="upper center",
+        cellLoc="center",
+        colWidths=[0.09, 0.38, 0.06, 0.06, 0.08, 0.08, 0.25],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.5)
+    table.scale(1.0, 1.5)
+    for (row, _col), cell in table.get_celld().items():
+        cell.set_edgecolor(_GRID)
+        if row == 0:
+            cell.set_text_props(fontweight="bold", color=_INK)
+            cell.set_facecolor(_NEUTRAL_FILL)
+        else:
+            cell.set_text_props(color=_INK_SECONDARY)
+            cell.set_facecolor(_SURFACE)
+
+    ax2 = fig.add_axes((0.05, 0.10, 0.90, 0.26))
+    ax2.axis("off")
+    bridge_header = ["Bridge (cross-merchandising candidate)", "Lift", "Support", "Orders", "Connects"]
+    bridge_body = []
+    for edge in report.bridges[:6]:
+        bridge_body.append(
+            [
+                edge.label,
+                f"{edge.lift:.2f}",
+                f"{edge.support:.1%}",
+                f"{edge.support_count}",
+                f"community {report.membership[edge.item_a]} <-> "
+                f"{report.membership[edge.item_b]}",
+            ]
+        )
+    if not bridge_body:
+        bridge_body.append(["none at these thresholds", "-", "-", "-", "-"])
+    bridge_table = ax2.table(
+        cellText=bridge_body,
+        colLabels=bridge_header,
+        loc="upper center",
+        cellLoc="center",
+        colWidths=[0.40, 0.08, 0.10, 0.08, 0.24],
+    )
+    bridge_table.auto_set_font_size(False)
+    bridge_table.set_fontsize(7.5)
+    bridge_table.scale(1.0, 1.5)
+    for (row, _col), cell in bridge_table.get_celld().items():
+        cell.set_edgecolor(_GRID)
+        if row == 0:
+            cell.set_text_props(fontweight="bold", color=_INK)
+            cell.set_facecolor(_NEUTRAL_FILL)
+        else:
+            cell.set_text_props(color=_INK_SECONDARY)
+            cell.set_facecolor(_SURFACE)
+    pdf.savefig(fig)
+
+
 def _segments_page(pdf: PdfPages, result: AnalysisResult) -> None:
     segmentation = result.segmentation
     k = len(segmentation.profiles)
@@ -485,16 +594,20 @@ def export_pdf(
     path: str,
     stability_report: StabilityReport | None = None,
     evaluation_report: EvaluationReport | None = None,
+    affinity_report: AffinityReport | None = None,
 ) -> None:
-    """Write the six-page executive PDF (stability + recommender back-test pages)."""
+    """Write the seven-page executive PDF (network, stability and back-test pages)."""
     if stability_report is None:
         stability_report = build_stability_report(result)
     if evaluation_report is None:
         evaluation_report = build_evaluation_report(result)
+    if affinity_report is None:
+        affinity_report = build_affinity_report(result)
     with PdfPages(path) as pdf:
         _cover_page(pdf, result)
         _rules_page(pdf, result)
         _heatmap_page(pdf, result)
+        _network_page(pdf, affinity_report)
         _segments_page(pdf, result)
         _stability_page(pdf, stability_report)
         _evaluation_page(pdf, evaluation_report)
@@ -519,12 +632,15 @@ def export_excel(
     path: str,
     stability_report: StabilityReport | None = None,
     evaluation_report: EvaluationReport | None = None,
+    affinity_report: AffinityReport | None = None,
 ) -> None:
-    """Write the analyst workbook: Rules, Itemsets, Segments, Recommendations, Stability, Evaluation."""
+    """Write the analyst workbook: Rules, Itemsets, Segments, Recommendations, Stability, Evaluation, Network."""
     if stability_report is None:
         stability_report = build_stability_report(result)
     if evaluation_report is None:
         evaluation_report = build_evaluation_report(result)
+    if affinity_report is None:
+        affinity_report = build_affinity_report(result)
     workbook = Workbook()
 
     sheet = workbook.active
@@ -728,6 +844,69 @@ def export_excel(
     sheet.cell(row=settings_row + 1, column=1).font = Font(bold=True)
     _set_widths(sheet, [26, 12, 12, 12, 12, 12, 12])
 
+    sheet = workbook.create_sheet("Network")
+    sheet.append([DISCLAIMER])
+    sheet.append([CAUSATION_NOTE])
+    sheet.append([affinity_report.plain_language()])
+    sheet.append([])
+    communities_header_row = 5
+    sheet.append(
+        ["Community", "Categories", "Size", "Internal edges", "Avg internal lift",
+         "Max internal lift", "Top internal pair"]
+    )
+    for community in affinity_report.communities:
+        sheet.append(
+            [
+                community.community_id,
+                ", ".join(community.members),
+                community.n_members,
+                community.n_internal_edges,
+                round(community.lift_mean, 3) if community.n_internal_edges else "",
+                round(community.lift_max, 3) if community.n_internal_edges else "",
+                f"{community.top_edge.label} ({community.top_edge.lift:.2f})"
+                if community.top_edge is not None
+                else "",
+            ]
+        )
+    _style_header(sheet, communities_header_row, 7)
+    sheet.append([])
+    edges_header_row = communities_header_row + len(affinity_report.communities) + 2
+    sheet.append(
+        ["Edge", "Support", "Orders", "Lift", "Leverage", "Weight (lift - 1)",
+         "Community A", "Community B", "Type"]
+    )
+    for edge in affinity_report.edges:
+        community_a = affinity_report.membership[edge.item_a]
+        community_b = affinity_report.membership[edge.item_b]
+        sheet.append(
+            [
+                edge.label,
+                round(edge.support, 4),
+                edge.support_count,
+                round(edge.lift, 3),
+                round(edge.leverage, 4),
+                round(edge.weight, 3),
+                community_a,
+                community_b,
+                "internal" if community_a == community_b else "BRIDGE",
+            ]
+        )
+    _style_header(sheet, edges_header_row, 9)
+    sheet.append([])
+    sheet.append(
+        [
+            "Setup",
+            f"edges = frequent category pairs (support >= "
+            f"{affinity_report.min_support:.0%}) with lift >= "
+            f"{affinity_report.min_lift:.2f}, weighted by lift - 1; communities via "
+            "greedy modularity maximisation (Newman 2004), weighted modularity "
+            f"Q = {affinity_report.modularity:.3f}; bridges are edges whose "
+            "endpoints sit in different communities.",
+        ]
+    )
+    sheet.cell(row=edges_header_row + len(affinity_report.edges) + 2, column=1).font = Font(bold=True)
+    _set_widths(sheet, [40, 10, 9, 8, 10, 15, 12, 12, 10])
+
     workbook.save(path)
 
 
@@ -750,18 +929,23 @@ def write_deliverables(
     os.makedirs(output_dir, exist_ok=True)
     stability_report = build_stability_report(result)
     evaluation_report = build_evaluation_report(result)
+    affinity_report = build_affinity_report(result)
     pdf_path = os.path.join(output_dir, "cross_sell_briefing.pdf")
     excel_path = os.path.join(output_dir, "market_basket_analysis.xlsx")
     csv_path = os.path.join(output_dir, "rule_stability.csv")
     svg_path = os.path.join(output_dir, "rule_stability.svg")
     eval_csv_path = os.path.join(output_dir, "recommender_backtest.csv")
     eval_svg_path = os.path.join(output_dir, "recommender_backtest.svg")
-    export_pdf(result, pdf_path, stability_report, evaluation_report)
-    export_excel(result, excel_path, stability_report, evaluation_report)
+    network_csv_path = os.path.join(output_dir, "affinity_network.csv")
+    network_svg_path = os.path.join(output_dir, "affinity_network.svg")
+    export_pdf(result, pdf_path, stability_report, evaluation_report, affinity_report)
+    export_excel(result, excel_path, stability_report, evaluation_report, affinity_report)
     write_stability_csv(stability_report, csv_path)
     write_stability_svg(stability_report, svg_path)
     write_evaluation_csv(evaluation_report, eval_csv_path)
     write_evaluation_svg(evaluation_report, eval_svg_path)
+    write_affinity_csv(affinity_report, network_csv_path)
+    write_affinity_svg(affinity_report, network_svg_path)
 
     sizes: dict[str, int] = {}
     # The PDF and workbook are substantial; the CSV/SVG read-outs are small but
@@ -773,6 +957,8 @@ def write_deliverables(
         (svg_path, 200),
         (eval_csv_path, 200),
         (eval_svg_path, 200),
+        (network_csv_path, 200),
+        (network_svg_path, 200),
     ):
         size = os.path.getsize(path)
         if size <= floor:

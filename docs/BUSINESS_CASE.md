@@ -37,7 +37,11 @@ Mine the order history for association rules and act on the strongest ones:
 3. **Customer segmentation** (k-means on spend shares) to route the right rule to the
    right account list -- three clear segments emerge (construction-, MRO- and
    fabrication-shaped).
-4. **Action list**: a ranked top-10 cross-sell list plus a next-best-product function
+4. **Category communities** (greedy modularity on the lift-weighted co-purchase
+   graph) for category managers: 3 assortment groups that mirror the segments,
+   plus 4 bridge pairs between groups (strongest: electrical + lubricants, lift
+   1.40) as cross-merchandising candidates.
+5. **Action list**: a ranked top-10 cross-sell list plus a next-best-product function
    for the webshop basket and the rep's order screen.
 
 ## ROI (all figures labelled)
@@ -72,21 +76,24 @@ Mine the order history for association rules and act on the strongest ones:
 - **E-commerce lead** -- owns the webshop recommendation slot; consumes the
   next-best-product function.
 - **Category managers** -- own bundle pricing and the promo calendar; consume the
-  lift heatmap and segment profiles.
+  lift heatmap, the affinity communities (bundle/planogram groups and
+  cross-merchandising bridges) and segment profiles.
 - **Data/BI** -- owns the pipeline, thresholds and the A/B test readout.
 
 ## Deliverable
 
 `python -m basket --deliverables` produces, reproducibly:
 
-- `deliverables/cross_sell_briefing.pdf` -- six-page executive briefing: headline
-  numbers and disclaimer, top-rules table, category-pair lift heatmap, segment
-  profiles, a rule-stability page and a recommender back-test page.
+- `deliverables/cross_sell_briefing.pdf` -- seven-page executive briefing: headline
+  numbers and disclaimer, top-rules table, category-pair lift heatmap, an
+  affinity-communities page, segment profiles, a rule-stability page and a
+  recommender back-test page.
 - `deliverables/market_basket_analysis.xlsx` -- working file for analysts: all 254
   rules with full metrics, all 224 itemsets, segment assignments per customer, the
   ranked recommendation list with the estimate assumption spelled out per row, a
-  Stability sheet scoring how well the top rules persist across splits, and an
-  Evaluation sheet with the recommender back-test metrics.
+  Stability sheet scoring how well the top rules persist across splits, an
+  Evaluation sheet with the recommender back-test metrics, and a Network sheet
+  with the affinity communities and the full edge list.
 - `deliverables/rule_stability.csv` + `deliverables/rule_stability.svg` -- the
   robustness read-out: for the top 20 rules by lift, the fraction of time windows in
   which each rule still clears every threshold (18 of 20 stable on the default run),
@@ -95,3 +102,7 @@ Mine the order history for association rules and act on the strongest ones:
   -- the predictive-accuracy read-out: hit-rate@K, MRR and coverage for the rule
   recommender against a popularity baseline on held-out baskets, so a reviewer can
   see the engine beats a trivial control before commissioning the A/B test.
+- `deliverables/affinity_network.csv` + `deliverables/affinity_network.svg` -- the
+  assortment-structure read-out: the lift-weighted co-purchase edge list with
+  community assignments, and a node-link drawing of the 3 communities with the
+  bridge pairs that connect them (observational structure, not causation).

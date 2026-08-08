@@ -14,6 +14,7 @@ import sys
 
 from basket.exports import (
     DISCLAIMER,
+    build_affinity_report,
     build_evaluation_report,
     build_stability_report,
     run_analysis,
@@ -57,6 +58,23 @@ def _print_summary(args: argparse.Namespace) -> None:
     print("Top cross-sell recommendations (observational; correlation != causation):")
     for recommendation in result.recommendations[:3]:
         print(f"  - {recommendation.headline}")
+    print()
+    affinity = build_affinity_report(result)
+    print("Category affinity network (co-purchase communities, greedy modularity):")
+    print(f"  {affinity.plain_language()}")
+    for community in affinity.communities:
+        if community.n_members < 2:
+            continue
+        print(
+            f"  - community {community.community_id}: {', '.join(community.members)} "
+            f"({community.n_internal_edges} edges, avg internal lift "
+            f"{community.lift_mean:.2f})"
+        )
+    for bridge in affinity.bridges[:3]:
+        print(
+            f"  - bridge: {bridge.label} (lift {bridge.lift:.2f}) links communities "
+            f"{affinity.membership[bridge.item_a]} and {affinity.membership[bridge.item_b]}"
+        )
     print()
     stability = build_stability_report(result)
     print("Rule stability (robustness check across time splits):")

@@ -21,7 +21,8 @@ Running `python -m basket` end to end:
   Apriori with downward-closure pruning; an independent FP-growth implementation
   returns the **exact same itemsets and supports** (a test asserts equality).
 - **254 association rules** kept at confidence >= 30% and lift >= 1.10, ranked by lift.
-  None fall below the thin-support threshold (30 orders) at these settings.
+  None fall below the thin-support threshold (30 orders) at these settings. (149 of
+  them turn out to be non-redundant -- see the redundancy section below.)
 
 Top 3 rules by lift:
 
@@ -50,6 +51,56 @@ recovered with lift >= 1.5 (tested).
   buyer attaches the recommended category at the rule's confidence instead of the
   baseline rate, multiplied by the category's average line value. Real attach rates
   would have to come from an A/B test.
+
+## Rule redundancy -- which rules add information, not repetition?
+
+254 rules is a screen, not an action list -- and association mining is repetitive
+by construction: if *welding_supplies -> ppe_eyewear* holds, then *lubricants +
+welding_supplies -> ppe_eyewear* very nearly holds too, and a lift ranking happily
+shows both. So the pipeline scores every rule's **confidence improvement**
+(Bayardo, Agrawal & Gunopulos 1999): its confidence minus the best confidence of
+any simpler rule with the same consequent, including the baseline P(consequent).
+A rule with improvement <= 0 is **redundant** -- the simpler rule fires on
+strictly more baskets at least as confidently, so pruning it loses nothing.
+Alongside, the frequent-itemset collection is classified into **closed** and
+**maximal** itemsets (Pasquier et al. 1999; Bayardo 1998). All of it reuses the
+mined itemsets and rule list directly; deterministic, with lexicographic
+tie-breaks in the covering-rule search.
+
+Measured (seed 42, 6,000 orders):
+
+- **105 of the 254 rules (41%) are redundant; the remaining 149 carry all of the
+  list's information.** Every pruned rule is a two-condition rule covered by a
+  one-condition rule at equal-or-higher confidence (a test asserts the covering
+  rule is itself in the kept set) -- e.g. the highest-lift pruned rule,
+  *lubricants + welding_supplies -> ppe_eyewear* (lift 2.19, confidence 55.6%),
+  is covered by plain *welding_supplies -> ppe_eyewear* at 55.9%: the lubricants
+  condition buys nothing (improvement -0.3 pp) despite the near-identical lift.
+- **The flagship planted rule survives with a wide margin:** *fasteners +
+  ppe_gloves -> power_tools* improves **+16.0 pp** over *fasteners ->
+  power_tools* alone (79.7% vs 63.7% confidence) -- the glove condition genuinely
+  sharpens the prediction, which is exactly how a real bundle should look. The
+  largest improvement overall is *ppe_eyewear -> welding_supplies* at +33.2 pp
+  over the 27.6% baseline.
+- **Cross-check with the stability layer:** *janitorial + ppe_eyewear ->
+  welding_supplies*, one of the two window-specific rules flagged below, scrapes
+  through here with a +0.008 pp improvement -- two independent checks (temporal
+  robustness, information content) agree this rule adds close to nothing.
+- Of the 224 frequent itemsets, **224 are closed and 126 are maximal**: at 6,000
+  orders no nested pair of itemsets ties in support exactly, so closure does not
+  compress this particular dataset (the machinery is verified on a hand-checked
+  fixture where it does); the improvement criterion is what does the pruning
+  work at this scale.
+
+Honest caveats: the redundant/kept cut is a strict `improvement > 0`, so a rule
+that beats its best simpler alternative by a hair is technically kept (the
+smallest survivor clears it by +0.004 pp); a real deployment would demand a
+material margin (the `tol` parameter exists for exactly that). And redundancy is
+about information content, not causality or effect size -- a pruned rule is not
+*wrong*, it is merely already said by a simpler one. Outputs:
+`deliverables/rule_redundancy.csv` (every rule's verdict, with the covering rule
+named per row), `deliverables/rule_redundancy.svg`, a "Redundancy" sheet in the
+workbook and a redundancy page in the PDF.
 
 ## Rule stability -- which rules are trustworthy, not just high-lift?
 
@@ -168,15 +219,16 @@ Python 3.10+ with numpy, pandas, matplotlib, openpyxl (see `requirements.txt`).
 
 ```bash
 pip install -r requirements.txt
-python -m basket                  # console summary: rules, segments, recommendations,
-                                  #    and the rule-stability read
+python -m basket                  # console summary: rules, redundancy, segments,
+                                  #    recommendations, and the rule-stability read
 python -m basket --deliverables   # writes deliverables/cross_sell_briefing.pdf,
                                   #    market_basket_analysis.xlsx, rule_stability.csv,
                                   #    rule_stability.svg, recommender_backtest.csv,
-                                  #    recommender_backtest.svg, affinity_network.csv
-                                  #    and affinity_network.svg
+                                  #    recommender_backtest.svg, affinity_network.csv,
+                                  #    affinity_network.svg, rule_redundancy.csv
+                                  #    and rule_redundancy.svg
 python -m ruff check .            # lint (clean)
-python -m pytest -q               # 55 tests (green)
+python -m pytest -q               # 68 tests (green)
 ```
 
 Everything is reproducible: same seed, same numbers. `--seed`, `--baskets`,
@@ -194,6 +246,11 @@ deliverables, and a GitHub Actions workflow that runs the same gates.
   recursive mining over conditional pattern bases. Tested equal to Apriori.
 - `basket/rules.py` -- support, confidence, lift, leverage, conviction; filtering,
   lift ranking, and a thin-support flag for rules backed by too few orders.
+- `basket/redundancy.py` -- rigor layer over the rule list: closed and maximal
+  frequent itemsets (Pasquier et al. 1999; Bayardo 1998) and a minimal
+  non-redundant rule set via confidence improvement (Bayardo, Agrawal &
+  Gunopulos 1999), with every pruned rule naming the simpler rule that covers
+  it; writes a CSV and a hand-drawn funnel SVG.
 - `basket/stability.py` -- robustness trust layer: re-mines the top rules across
   time windows or seeded bootstrap folds (reusing Apriori + rule scoring) and scores
   how consistently each rule clears the thresholds; writes a CSV and a hand-drawn SVG.
@@ -210,11 +267,11 @@ deliverables, and a GitHub Actions workflow that runs the same gates.
   graph from the mined frequent pairs, community detection by greedy weighted
   modularity maximisation (Newman 2004) with deterministic tie-breaks, bridge
   edges between communities; writes a CSV and a hand-drawn node-link SVG.
-- `basket/exports.py` -- a seven-page executive PDF (cover with disclaimer, rules
-  table, category-pair lift heatmap, affinity-communities page, segment profiles,
-  rule-stability page, recommender back-test page) and a seven-sheet Excel
-  workbook (Rules, Itemsets, Segments, Recommendations, Stability, Evaluation,
-  Network).
+- `basket/exports.py` -- an eight-page executive PDF (cover with disclaimer, rules
+  table, redundancy page, category-pair lift heatmap, affinity-communities page,
+  segment profiles, rule-stability page, recommender back-test page) and an
+  eight-sheet Excel workbook (Rules, Itemsets, Redundancy, Segments,
+  Recommendations, Stability, Evaluation, Network).
 
 ## Honesty notes
 

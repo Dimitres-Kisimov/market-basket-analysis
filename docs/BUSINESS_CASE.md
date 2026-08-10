@@ -34,14 +34,18 @@ Mine the order history for association rules and act on the strongest ones:
 2. **Rule scoring** with confidence, lift, leverage and conviction; keep 254 rules at
    confidence >= 30% and lift >= 1.10; flag thin-support rules (< 30 orders) and keep
    them out of recommendations.
-3. **Customer segmentation** (k-means on spend shares) to route the right rule to the
+3. **Redundancy pruning** (closed/maximal itemsets, confidence improvement): the 254
+   kept rules collapse to **149 non-redundant ones** -- the list reps and the webshop
+   actually need -- and every pruned rule names the simpler rule that covers it at
+   equal-or-higher confidence, so nothing is lost and nothing is argued twice.
+4. **Customer segmentation** (k-means on spend shares) to route the right rule to the
    right account list -- three clear segments emerge (construction-, MRO- and
    fabrication-shaped).
-4. **Category communities** (greedy modularity on the lift-weighted co-purchase
+5. **Category communities** (greedy modularity on the lift-weighted co-purchase
    graph) for category managers: 3 assortment groups that mirror the segments,
    plus 4 bridge pairs between groups (strongest: electrical + lubricants, lift
    1.40) as cross-merchandising candidates.
-5. **Action list**: a ranked top-10 cross-sell list plus a next-best-product function
+6. **Action list**: a ranked top-10 cross-sell list plus a next-best-product function
    for the webshop basket and the rep's order screen.
 
 ## ROI (all figures labelled)
@@ -84,16 +88,18 @@ Mine the order history for association rules and act on the strongest ones:
 
 `python -m basket --deliverables` produces, reproducibly:
 
-- `deliverables/cross_sell_briefing.pdf` -- seven-page executive briefing: headline
-  numbers and disclaimer, top-rules table, category-pair lift heatmap, an
-  affinity-communities page, segment profiles, a rule-stability page and a
-  recommender back-test page.
+- `deliverables/cross_sell_briefing.pdf` -- eight-page executive briefing: headline
+  numbers and disclaimer, top-rules table, a redundancy page (the minimal
+  non-redundant rule set with the top pruned rules and what covers them), a
+  category-pair lift heatmap, an affinity-communities page, segment profiles, a
+  rule-stability page and a recommender back-test page.
 - `deliverables/market_basket_analysis.xlsx` -- working file for analysts: all 254
-  rules with full metrics, all 224 itemsets, segment assignments per customer, the
-  ranked recommendation list with the estimate assumption spelled out per row, a
-  Stability sheet scoring how well the top rules persist across splits, an
-  Evaluation sheet with the recommender back-test metrics, and a Network sheet
-  with the affinity communities and the full edge list.
+  rules with full metrics, all 224 itemsets, a Redundancy sheet with each rule's
+  confidence improvement, verdict and covering rule, segment assignments per
+  customer, the ranked recommendation list with the estimate assumption spelled
+  out per row, a Stability sheet scoring how well the top rules persist across
+  splits, an Evaluation sheet with the recommender back-test metrics, and a
+  Network sheet with the affinity communities and the full edge list.
 - `deliverables/rule_stability.csv` + `deliverables/rule_stability.svg` -- the
   robustness read-out: for the top 20 rules by lift, the fraction of time windows in
   which each rule still clears every threshold (18 of 20 stable on the default run),
@@ -106,3 +112,8 @@ Mine the order history for association rules and act on the strongest ones:
   assortment-structure read-out: the lift-weighted co-purchase edge list with
   community assignments, and a node-link drawing of the 3 communities with the
   bridge pairs that connect them (observational structure, not causation).
+- `deliverables/rule_redundancy.csv` + `deliverables/rule_redundancy.svg` -- the
+  information-content read-out: every rule's confidence improvement and
+  kept/redundant verdict with the covering rule named per row (105 of 254
+  redundant on the default run), plus a funnel graphic from mined rules and
+  itemsets down to the non-redundant core.

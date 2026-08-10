@@ -37,6 +37,12 @@ from basket.evaluate import (
     write_evaluation_svg,
 )
 from basket.recommend import ASSUMPTION_NOTE, Recommendation, cross_sell_recommendations
+from basket.redundancy import (
+    RedundancyReport,
+    rule_redundancy,
+    write_redundancy_csv,
+    write_redundancy_svg,
+)
 from basket.rules import Rule, format_itemset, format_rule, generate_rules
 from basket.segment import Segmentation, segment_customers
 from basket.stability import (
@@ -166,6 +172,11 @@ def build_evaluation_report(
     )
 
 
+def build_redundancy_report(result: AnalysisResult) -> RedundancyReport:
+    """Closed/maximal itemsets + minimal non-redundant rule set for this run."""
+    return rule_redundancy(result.itemsets, result.rules, result.n_baskets)
+
+
 def build_affinity_report(result: AnalysisResult) -> AffinityReport:
     """Category affinity network + communities, reusing this run's mined itemsets."""
     return affinity_network(
@@ -291,6 +302,93 @@ def _rules_page(pdf: PdfPages, result: AnalysisResult, max_rows: int = 12) -> No
     table.set_fontsize(8.5)
     table.scale(1.0, 1.55)
     for (row, _col), cell in table.get_celld().items():
+        cell.set_edgecolor(_GRID)
+        if row == 0:
+            cell.set_text_props(fontweight="bold", color=_INK)
+            cell.set_facecolor(_NEUTRAL_FILL)
+        else:
+            cell.set_text_props(color=_INK_SECONDARY)
+            cell.set_facecolor(_SURFACE)
+    pdf.savefig(fig)
+
+
+def _redundancy_page(pdf: PdfPages, report: RedundancyReport, max_rows: int = 8) -> None:
+    fig = _new_page(
+        "Minimal non-redundant rule set (redundancy pruning)",
+        "A rule is REDUNDANT when a simpler same-consequent rule predicts at least as "
+        "confidently (improvement <= 0); pruning it loses nothing.",
+    )
+    fig.text(
+        0.06, 0.855, report.plain_language(),
+        fontsize=9.5, color=_INK, va="top", wrap=True,
+    )
+    ax = fig.add_axes((0.05, 0.42, 0.90, 0.36))
+    ax.axis("off")
+    header = [
+        "Non-redundant rule (top by improvement)", "Lift", "Confidence",
+        "Improvement", "Best simpler alternative",
+    ]
+    body = []
+    for verdict in report.kept_by_improvement()[:max_rows]:
+        body.append(
+            [
+                verdict.label,
+                f"{verdict.rule.lift:.2f}",
+                f"{verdict.rule.confidence:.1%}",
+                f"{verdict.improvement * 100:+.1f} pp",
+                f"{verdict.best_alternative_label} ({verdict.best_alternative_confidence:.1%})",
+            ]
+        )
+    if not body:
+        body.append(["none at these thresholds", "-", "-", "-", "-"])
+    table = ax.table(
+        cellText=body,
+        colLabels=header,
+        loc="upper center",
+        cellLoc="center",
+        colWidths=[0.36, 0.06, 0.10, 0.11, 0.37],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.5)
+    table.scale(1.0, 1.5)
+    for (row, _col), cell in table.get_celld().items():
+        cell.set_edgecolor(_GRID)
+        if row == 0:
+            cell.set_text_props(fontweight="bold", color=_INK)
+            cell.set_facecolor(_NEUTRAL_FILL)
+        else:
+            cell.set_text_props(color=_INK_SECONDARY)
+            cell.set_facecolor(_SURFACE)
+
+    ax2 = fig.add_axes((0.05, 0.12, 0.90, 0.32))
+    ax2.axis("off")
+    pruned_header = [
+        "Pruned rule (redundant)", "Lift", "Confidence", "Covered by", "Covering conf.",
+    ]
+    pruned_body = []
+    for verdict in report.pruned[:max_rows]:
+        pruned_body.append(
+            [
+                verdict.label,
+                f"{verdict.rule.lift:.2f}",
+                f"{verdict.rule.confidence:.1%}",
+                verdict.best_alternative_label,
+                f"{verdict.best_alternative_confidence:.1%}",
+            ]
+        )
+    if not pruned_body:
+        pruned_body.append(["none at these thresholds", "-", "-", "-", "-"])
+    pruned_table = ax2.table(
+        cellText=pruned_body,
+        colLabels=pruned_header,
+        loc="upper center",
+        cellLoc="center",
+        colWidths=[0.38, 0.06, 0.10, 0.34, 0.12],
+    )
+    pruned_table.auto_set_font_size(False)
+    pruned_table.set_fontsize(7.5)
+    pruned_table.scale(1.0, 1.5)
+    for (row, _col), cell in pruned_table.get_celld().items():
         cell.set_edgecolor(_GRID)
         if row == 0:
             cell.set_text_props(fontweight="bold", color=_INK)
@@ -595,17 +693,21 @@ def export_pdf(
     stability_report: StabilityReport | None = None,
     evaluation_report: EvaluationReport | None = None,
     affinity_report: AffinityReport | None = None,
+    redundancy_report: RedundancyReport | None = None,
 ) -> None:
-    """Write the seven-page executive PDF (network, stability and back-test pages)."""
+    """Write the eight-page executive PDF (redundancy, network, stability, back-test)."""
     if stability_report is None:
         stability_report = build_stability_report(result)
     if evaluation_report is None:
         evaluation_report = build_evaluation_report(result)
     if affinity_report is None:
         affinity_report = build_affinity_report(result)
+    if redundancy_report is None:
+        redundancy_report = build_redundancy_report(result)
     with PdfPages(path) as pdf:
         _cover_page(pdf, result)
         _rules_page(pdf, result)
+        _redundancy_page(pdf, redundancy_report)
         _heatmap_page(pdf, result)
         _network_page(pdf, affinity_report)
         _segments_page(pdf, result)
@@ -633,14 +735,17 @@ def export_excel(
     stability_report: StabilityReport | None = None,
     evaluation_report: EvaluationReport | None = None,
     affinity_report: AffinityReport | None = None,
+    redundancy_report: RedundancyReport | None = None,
 ) -> None:
-    """Write the analyst workbook: Rules, Itemsets, Segments, Recommendations, Stability, Evaluation, Network."""
+    """Write the analyst workbook: Rules, Itemsets, Redundancy, Segments, Recommendations, Stability, Evaluation, Network."""
     if stability_report is None:
         stability_report = build_stability_report(result)
     if evaluation_report is None:
         evaluation_report = build_evaluation_report(result)
     if affinity_report is None:
         affinity_report = build_affinity_report(result)
+    if redundancy_report is None:
+        redundancy_report = build_redundancy_report(result)
     workbook = Workbook()
 
     sheet = workbook.active
@@ -691,6 +796,54 @@ def export_excel(
     _style_header(sheet, 3, 4)
     _set_widths(sheet, [46, 7, 10, 9])
     sheet.freeze_panes = "A4"
+
+    sheet = workbook.create_sheet("Redundancy")
+    sheet.append([DISCLAIMER])
+    sheet.append([CAUSATION_NOTE])
+    sheet.append([redundancy_report.plain_language()])
+    sheet.append([])
+    redundancy_header_row = 5
+    sheet.append(
+        [
+            "Rank", "Rule", "Support", "Orders", "Confidence", "Lift",
+            "Improvement", "Verdict", "Best simpler rule", "Best simpler confidence",
+        ]
+    )
+    for rank, verdict in enumerate(redundancy_report.verdicts, start=1):
+        rule = verdict.rule
+        sheet.append(
+            [
+                rank,
+                verdict.label,
+                round(rule.support, 4),
+                rule.support_count,
+                round(rule.confidence, 4),
+                round(rule.lift, 3),
+                round(verdict.improvement, 4),
+                "REDUNDANT" if verdict.redundant else "kept",
+                verdict.best_alternative_label,
+                round(verdict.best_alternative_confidence, 4),
+            ]
+        )
+    _style_header(sheet, redundancy_header_row, 10)
+    sheet.append([])
+    sheet.append(
+        [
+            "Setup",
+            "improvement = confidence minus the best confidence of any simpler rule "
+            "with the same consequent (including the baseline P(consequent)); a rule "
+            "is REDUNDANT when improvement <= 0, because the simpler rule fires on "
+            f"more baskets at least as confidently. Of {redundancy_report.n_itemsets} "
+            f"frequent itemsets, {redundancy_report.n_closed} are closed (lossless "
+            f"summary) and {redundancy_report.n_maximal} maximal; closure is relative "
+            "to the mined collection (itemsets up to 3 categories).",
+        ]
+    )
+    sheet.cell(
+        row=redundancy_header_row + len(redundancy_report.verdicts) + 2, column=1
+    ).font = Font(bold=True)
+    _set_widths(sheet, [6, 46, 10, 8, 11, 8, 12, 12, 40, 22])
+    sheet.freeze_panes = f"A{redundancy_header_row + 1}"
 
     sheet = workbook.create_sheet("Segments")
     sheet.append([DISCLAIMER])
@@ -930,6 +1083,7 @@ def write_deliverables(
     stability_report = build_stability_report(result)
     evaluation_report = build_evaluation_report(result)
     affinity_report = build_affinity_report(result)
+    redundancy_report = build_redundancy_report(result)
     pdf_path = os.path.join(output_dir, "cross_sell_briefing.pdf")
     excel_path = os.path.join(output_dir, "market_basket_analysis.xlsx")
     csv_path = os.path.join(output_dir, "rule_stability.csv")
@@ -938,14 +1092,24 @@ def write_deliverables(
     eval_svg_path = os.path.join(output_dir, "recommender_backtest.svg")
     network_csv_path = os.path.join(output_dir, "affinity_network.csv")
     network_svg_path = os.path.join(output_dir, "affinity_network.svg")
-    export_pdf(result, pdf_path, stability_report, evaluation_report, affinity_report)
-    export_excel(result, excel_path, stability_report, evaluation_report, affinity_report)
+    redundancy_csv_path = os.path.join(output_dir, "rule_redundancy.csv")
+    redundancy_svg_path = os.path.join(output_dir, "rule_redundancy.svg")
+    export_pdf(
+        result, pdf_path, stability_report, evaluation_report, affinity_report,
+        redundancy_report,
+    )
+    export_excel(
+        result, excel_path, stability_report, evaluation_report, affinity_report,
+        redundancy_report,
+    )
     write_stability_csv(stability_report, csv_path)
     write_stability_svg(stability_report, svg_path)
     write_evaluation_csv(evaluation_report, eval_csv_path)
     write_evaluation_svg(evaluation_report, eval_svg_path)
     write_affinity_csv(affinity_report, network_csv_path)
     write_affinity_svg(affinity_report, network_svg_path)
+    write_redundancy_csv(redundancy_report, redundancy_csv_path)
+    write_redundancy_svg(redundancy_report, redundancy_svg_path)
 
     sizes: dict[str, int] = {}
     # The PDF and workbook are substantial; the CSV/SVG read-outs are small but
@@ -959,6 +1123,8 @@ def write_deliverables(
         (eval_svg_path, 200),
         (network_csv_path, 200),
         (network_svg_path, 200),
+        (redundancy_csv_path, 200),
+        (redundancy_svg_path, 200),
     ):
         size = os.path.getsize(path)
         if size <= floor:

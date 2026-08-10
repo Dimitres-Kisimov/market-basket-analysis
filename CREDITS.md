@@ -11,6 +11,13 @@ are re-implementations of published methods:
 - **Association-rule metrics** (confidence, lift, leverage, conviction) -- standard
   definitions; conviction from S. Brin et al., "Dynamic Itemset Counting and
   Implication Rules for Market Basket Data", SIGMOD 1997.
+- **Closed / maximal itemsets and rule redundancy** -- closed frequent itemsets
+  from N. Pasquier, Y. Bastide, R. Taouil, L. Lakhal, "Discovering Frequent
+  Closed Itemsets for Association Rules", ICDT 1999; maximal frequent itemsets
+  after R. J. Bayardo, "Efficiently Mining Long Patterns from Databases",
+  SIGMOD 1998; the confidence-improvement redundancy criterion from
+  R. J. Bayardo, R. Agrawal, D. Gunopulos, "Constraint-Based Rule Mining in
+  Large, Dense Databases", ICDE 1999.
 - **k-means** -- S. Lloyd's algorithm (1957/1982) with **k-means++** seeding from
   D. Arthur, S. Vassilvitskii, "k-means++: The Advantages of Careful Seeding",
   SODA 2007.

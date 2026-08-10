@@ -16,6 +16,7 @@ from basket.exports import (
     DISCLAIMER,
     build_affinity_report,
     build_evaluation_report,
+    build_redundancy_report,
     build_stability_report,
     run_analysis,
     write_deliverables,
@@ -44,6 +45,17 @@ def _print_summary(args: argparse.Namespace) -> None:
         print(
             f"  {format_rule(rule):<55s} lift={rule.lift:5.2f} "
             f"conf={rule.confidence:5.1%} support={rule.support:5.1%}{thin}"
+        )
+    print()
+    redundancy = build_redundancy_report(result)
+    print("Rule redundancy (minimal non-redundant set):")
+    print(f"  {redundancy.plain_language()}")
+    for verdict in redundancy.pruned[:3]:
+        print(
+            f"  - pruned: {verdict.label} (lift {verdict.rule.lift:.2f}, conf "
+            f"{verdict.rule.confidence:.1%}) -- covered by "
+            f"{verdict.best_alternative_label} at "
+            f"{verdict.best_alternative_confidence:.1%}"
         )
     print()
     print("Customer segments (k-means on spend shares):")

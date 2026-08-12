@@ -236,6 +236,7 @@ def test_csv_and_svg_writers_deterministic(baskets, tmp_path):
     svg = render_redundancy_svg(report)
     assert svg.startswith("<svg")
     assert "Minimal non-redundant rule set" in svg
+    assert "CATEGORY ATLAS" in svg and "PLATE 02 / 07" in svg  # atlas plate header
     assert render_redundancy_svg(report) == svg  # pure function of the report
     svg_path = tmp_path / "r.svg"
     write_redundancy_svg(report, str(svg_path))

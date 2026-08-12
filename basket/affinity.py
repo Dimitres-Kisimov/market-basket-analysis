@@ -33,6 +33,8 @@ from collections import defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from basket import design
+
 
 @dataclass(frozen=True)
 class AffinityEdge:
@@ -361,18 +363,8 @@ def write_affinity_csv(report: AffinityReport, path: str) -> int:
     return os.path.getsize(path)
 
 
-# SVG palette (matches the deliverables' light surface / other charts).
-_SVG_INK = "#0b0b0b"
-_SVG_INK_SECONDARY = "#52514e"
-_SVG_INK_MUTED = "#898781"
-_SVG_SURFACE = "#fcfcfb"
-_SVG_PANEL_BORDER = "#e1e0d9"
-_SVG_BASELINE = "#c3c2b7"
-_SVG_COMMUNITY_COLORS = ("#2a78d6", "#008300", "#e87ba4", "#eda100", "#1baf7a", "#eb6834")
-
-
-def _svg_escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+# Visual system: shared category-atlas tokens (see basket/design.py).
+_svg_escape = design.svg_escape
 
 
 def _pretty(category: str) -> str:
@@ -396,118 +388,279 @@ def _circle_positions(
     return positions
 
 
-def render_affinity_svg(report: AffinityReport) -> str:
-    """Build a deterministic, self-contained node-link SVG of the network.
+def _hull_exit_t(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    center: tuple[float, float],
+    radius: float,
+    *,
+    leaving: bool,
+) -> float:
+    """Parameter t in [0, 1] where segment p1->p2 crosses a hull circle.
 
-    One panel per multi-member community (nodes on a circle, edge width scaled
-    by excess lift), isolated categories listed as text, then the top bridges
-    between communities. No timestamps or randomness, so the bytes are
-    identical on every run.
+    ``leaving=True`` returns the crossing out of the hull around ``p1``;
+    ``leaving=False`` the crossing into the hull around ``p2``. Falls back to
+    the corresponding endpoint when the segment never crosses the circle.
+    """
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    fx, fy = p1[0] - center[0], p1[1] - center[1]
+    a = dx * dx + dy * dy
+    b = 2.0 * (fx * dx + fy * dy)
+    c = fx * fx + fy * fy - radius * radius
+    disc = b * b - 4.0 * a * c
+    if a <= 0.0 or disc < 0.0:
+        return 0.0 if leaving else 1.0
+    root = math.sqrt(disc)
+    t_minus = (-b - root) / (2.0 * a)
+    t_plus = (-b + root) / (2.0 * a)
+    t = t_plus if leaving else t_minus
+    return min(1.0, max(0.0, t))
+
+
+def _cluster_layout(
+    n_panels: int, content_top: int, hull_r: float, width: int
+) -> tuple[list[tuple[float, float, bool]], float]:
+    """Deterministic community-cluster centres.
+
+    Returns ``[(cx, cy, header_above), ...]`` and the bottom y of the cluster
+    area. Three communities form the atlas triangle (apex up, headers pushed
+    away from the bridge zone); other counts fall back to rows of two.
+    """
+    cx_mid = width / 2.0
+    first_cy = content_top + 34.0 + hull_r
+    if n_panels == 1:
+        centers = [(cx_mid, first_cy, True)]
+    elif n_panels == 3:
+        apex = (cx_mid, first_cy, True)
+        lower_cy = first_cy + 2.0 * hull_r + 72.0
+        centers = [apex, (240.0, lower_cy, False), (width - 240.0, lower_cy, False)]
+    else:
+        centers = []
+        row_h = 2.0 * hull_r + 108.0
+        for index in range(n_panels):
+            row, column = divmod(index, 2)
+            cx = 245.0 if column == 0 else width - 245.0
+            if index == n_panels - 1 and n_panels % 2 == 1:
+                cx = cx_mid
+            centers.append((cx, first_cy + row * row_h, True))
+    bottom = 0.0
+    for _, cy, header_above in centers:
+        bottom = max(bottom, cy + hull_r + (18.0 if header_above else 52.0))
+    return centers, bottom
+
+
+def render_affinity_svg(report: AffinityReport) -> str:
+    """Build the atlas hero plate: a deterministic node-link SVG of the network.
+
+    One hull per multi-member community (nodes on a ring inside a tinted
+    community hull), node size scaled by connection strength (summed excess
+    lift), edge width scaled by excess lift, and bridges drawn as dashed
+    neutral edges between the actual nodes. Identity is never colour alone:
+    every node is direct-labelled, each community also has a marker shape
+    (circle / square / diamond), and members take lightness steps of the
+    community hue. No timestamps or randomness, so the bytes are identical
+    on every run.
     """
     width = 900
-    margin = 36
-    panel_w = 402
-    panel_h = 264
-    panel_gap = 24
-    columns = 2
-    top_pad = 96
+    margin = design.SVG_MARGIN
 
     panels = [c for c in report.communities if c.n_members >= 2]
-    n_rows = (len(panels) + columns - 1) // columns
-    panels_bottom = top_pad + n_rows * (panel_h + panel_gap)
-    isolated_h = 22 if report.isolated else 0
-    bridges_shown = report.bridges[:6]
-    bridges_h = 30 + 18 * len(bridges_shown) if bridges_shown else 30
-    height = panels_bottom + isolated_h + bridges_h + 78
-
-    parts: list[str] = []
-    parts.append(
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" font-family="Segoe UI, Helvetica, Arial, sans-serif">'
-    )
-    parts.append(f'<rect width="{width}" height="{height}" fill="{_SVG_SURFACE}"/>')
-    parts.append(
-        f'<text x="{margin}" y="40" font-size="20" font-weight="bold" '
-        f'fill="{_SVG_INK}">Category affinity network: {report.n_grouped} co-purchase '
-        f"communities</text>"
-    )
-    parts.append(
-        f'<text x="{margin}" y="64" font-size="12.5" fill="{_SVG_INK_SECONDARY}">'
-        f"{report.n_nodes} categories, {report.n_edges} edges (pair support &gt;= "
-        f"{report.min_support:.0%}, lift &gt;= {report.min_lift:.2f}); greedy "
-        f"modularity Q = {report.modularity:.2f}. Edge width = excess lift.</text>"
+    styles = design.category_styles(
+        [(c.community_id, c.members) for c in report.communities]
     )
 
-    for panel_index, community in enumerate(panels):
-        row, column = divmod(panel_index, columns)
-        panel_x = margin + column * (panel_w + panel_gap)
-        panel_y = top_pad + row * (panel_h + panel_gap)
-        color = _SVG_COMMUNITY_COLORS[community.community_id % len(_SVG_COMMUNITY_COLORS)]
-        parts.append(
-            f'<rect x="{panel_x}" y="{panel_y}" width="{panel_w}" height="{panel_h}" '
-            f'rx="8" fill="none" stroke="{_SVG_PANEL_BORDER}" stroke-width="1"/>'
+    # Connection strength: summed excess lift over all incident edges.
+    strength: dict[str, float] = defaultdict(float)
+    for edge in report.edges:
+        strength[edge.item_a] += edge.weight
+        strength[edge.item_b] += edge.weight
+    strength_max = max(strength.values(), default=0.0)
+
+    def node_radius(member: str) -> float:
+        if strength_max <= 0.0:
+            return 5.0
+        return 4.5 + 5.5 * math.sqrt(strength.get(member, 0.0) / strength_max)
+
+    max_members = max((c.n_members for c in panels), default=0)
+    ring_r = 44.0 + 4.8 * max_members
+    hull_r = ring_r + 24.0
+
+    parts = design.svg_open(width, 10)  # height patched at the end
+    content_top = design.svg_plate_header(
+        parts,
+        width=width,
+        plate="network",
+        title=(
+            f"Category affinity network: {report.n_grouped} co-purchase communities"
+        ),
+        subtitle=(
+            f"{report.n_nodes} categories, {report.n_edges} edges (pair support &gt;= "
+            f"{report.min_support:.0%}, lift &gt;= {report.min_lift:.2f}); greedy "
+            f"modularity Q = {report.modularity:.2f}. Edge width = excess lift."
+        ),
+        note=(
+            "Node size = connection strength (summed excess lift); hue = community, "
+            "lightness step = member; dashed grey = bridge."
+        ),
+    )
+
+    position_of: dict[str, tuple[float, float, float]] = {}
+    center_of: dict[int, tuple[float, float]] = {}
+    clusters_bottom = float(content_top)
+    if panels:
+        centers, clusters_bottom = _cluster_layout(
+            len(panels), content_top, hull_r, width
         )
-        parts.append(
-            f'<text x="{panel_x + 14}" y="{panel_y + 24}" font-size="12.5" '
-            f'font-weight="bold" fill="{_SVG_INK}">Community '
-            f"{community.community_id} &#183; {community.n_members} categories</text>"
-        )
-        parts.append(
-            f'<text x="{panel_x + 14}" y="{panel_y + 42}" font-size="10.5" '
-            f'fill="{_SVG_INK_MUTED}">{community.n_internal_edges} internal edges, '
-            f"avg lift {community.lift_mean:.2f}, max {community.lift_max:.2f}</text>"
-        )
-        center_x = panel_x + panel_w / 2.0
-        center_y = panel_y + 42 + (panel_h - 42) / 2.0
-        radius = 62.0
-        members = community.members
-        positions = _circle_positions(len(members), center_x, center_y, radius)
-        position_of = {member: positions[i] for i, member in enumerate(members)}
-        internal = [
-            e
-            for e in report.edges
-            if report.membership[e.item_a] == community.community_id
-            and report.membership[e.item_b] == community.community_id
-        ]
-        for edge in internal:
+        for community, (cx, cy, _above) in zip(panels, centers, strict=True):
+            center_of[community.community_id] = (cx, cy)
+        # Hulls + headers first, then all edges, then marks and labels on top.
+        for community, (cx, cy, header_above) in zip(panels, centers, strict=True):
+            hue = styles[community.members[0]].hue
+            parts.append(
+                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{hull_r:.1f}" '
+                f'fill="{hue}" fill-opacity="0.06" stroke="{hue}" '
+                f'stroke-opacity="0.35" stroke-width="1" stroke-dasharray="4 3"/>'
+            )
+            if header_above:
+                head_y, sub_y = cy - hull_r - 26.0, cy - hull_r - 10.0
+            else:
+                head_y, sub_y = cy + hull_r + 30.0, cy + hull_r + 46.0
+            parts.append(
+                f'<text x="{cx:.1f}" y="{head_y:.1f}" font-size="12.5" '
+                f'font-weight="bold" text-anchor="middle" fill="{design.INK}">'
+                f"Community {community.community_id} &#183; {community.n_members} "
+                f"categories</text>"
+            )
+            parts.append(
+                f'<text x="{cx:.1f}" y="{sub_y:.1f}" font-size="10.5" '
+                f'text-anchor="middle" fill="{design.INK_MUTED}">'
+                f"{community.n_internal_edges} internal edges, avg lift "
+                f"{community.lift_mean:.2f}, max {community.lift_max:.2f}</text>"
+            )
+            positions = _circle_positions(community.n_members, cx, cy, ring_r)
+            for member, position in zip(community.members, positions, strict=True):
+                position_of[member] = position
+
+        # Internal edges (community hue), then bridges (dashed neutral).
+        for edge in report.edges:
+            if edge.item_a not in position_of or edge.item_b not in position_of:
+                continue  # endpoint in a singleton community: listed as text below
+            x1, y1, _ = position_of[edge.item_a]
+            x2, y2, _ = position_of[edge.item_b]
+            stroke_w = 1.0 + 2.0 * min(1.0, edge.weight)
+            if report.membership[edge.item_a] == report.membership[edge.item_b]:
+                hue = styles[edge.item_a].hue
+                parts.append(
+                    f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+                    f'stroke="{hue}" stroke-width="{stroke_w:.1f}" '
+                    f'stroke-opacity="0.45"/>'
+                )
+        for index, edge in enumerate(report.bridges):
+            if edge.item_a not in position_of or edge.item_b not in position_of:
+                continue
             x1, y1, _ = position_of[edge.item_a]
             x2, y2, _ = position_of[edge.item_b]
             stroke_w = 1.0 + 2.0 * min(1.0, edge.weight)
             parts.append(
                 f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
-                f'stroke="{color}" stroke-width="{stroke_w:.1f}" stroke-opacity="0.45"/>'
+                f'stroke="{design.INK_MUTED}" stroke-width="{stroke_w:.1f}" '
+                f'stroke-opacity="0.8" stroke-dasharray="5 4"/>'
             )
-        for member in members:
-            x, y, cos_angle = position_of[member]
-            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="{color}"/>')
-            if cos_angle > 0.35:
-                anchor, dx = "start", 9.0
-            elif cos_angle < -0.35:
-                anchor, dx = "end", -9.0
-            else:
-                anchor, dx = "middle", 0.0
-            dy = 3.5 if abs(cos_angle) > 0.35 else (-9.0 if y < center_y else 15.0)
+            # Lift label placed in the free span between the two hulls (never
+            # inside a hull, where it would collide with node labels), nudged
+            # along the edge so near-parallel bridges never stack.
+            t_lo = _hull_exit_t(
+                (x1, y1), (x2, y2),
+                center_of[report.membership[edge.item_a]], hull_r, leaving=True,
+            )
+            t_hi = _hull_exit_t(
+                (x1, y1), (x2, y2),
+                center_of[report.membership[edge.item_b]], hull_r, leaving=False,
+            )
+            if not t_lo < t_hi:
+                t_lo, t_hi = 0.35, 0.65
+            t = t_lo + (t_hi - t_lo) * (0.30 + (index % 3) * 0.20)
+            label_x = x1 + (x2 - x1) * t
+            label_y = y1 + (y2 - y1) * t
+            label = f"lift {edge.lift:.2f}"
+            half_w = 3.0 * len(label)
             parts.append(
-                f'<text x="{x + dx:.1f}" y="{y + dy:.1f}" font-size="10" '
-                f'text-anchor="{anchor}" fill="{_SVG_INK}">'
-                f"{_svg_escape(_pretty(member))}</text>"
+                f'<rect x="{label_x - half_w:.1f}" y="{label_y - 8.0:.1f}" '
+                f'width="{2 * half_w:.1f}" height="13" rx="2" '
+                f'fill="{design.SURFACE}" fill-opacity="0.9"/>'
+            )
+            parts.append(
+                f'<text x="{label_x:.1f}" y="{label_y + 2.5:.1f}" font-size="9" '
+                f'text-anchor="middle" fill="{design.INK_SECONDARY}">{label}</text>'
             )
 
-    cursor_y = panels_bottom
+        # Node marks (community shape, member lightness step) + direct labels.
+        for community, (_cx, cy, _header_above) in zip(panels, centers, strict=True):
+            for member in community.members:
+                x, y, cos_angle = position_of[member]
+                style = styles[member]
+                radius = node_radius(member)
+                design.svg_mark(
+                    parts, x=x, y=y, r=radius, fill=style.fill, shape=style.shape
+                )
+                if cos_angle > 0.35:
+                    anchor, dx = "start", radius + 5.0
+                elif cos_angle < -0.35:
+                    anchor, dx = "end", -(radius + 5.0)
+                else:
+                    anchor, dx = "middle", 0.0
+                if abs(cos_angle) > 0.35:
+                    dy = 3.5
+                else:
+                    dy = -(radius + 6.0) if y < cy else radius + 12.0
+                parts.append(
+                    f'<text x="{x + dx:.1f}" y="{y + dy:.1f}" font-size="10" '
+                    f'text-anchor="{anchor}" fill="{design.INK}">'
+                    f"{_svg_escape(_pretty(member))}</text>"
+                )
+
+    # Legend: community shape + hue chips (identity never colour alone).
+    legend_y = clusters_bottom + 30.0
+    chip_x = float(margin)
+    for community in panels:
+        hue = styles[community.members[0]].hue
+        shape = styles[community.members[0]].shape
+        design.svg_mark(
+            parts, x=chip_x + 6.0, y=legend_y - 4.0, r=5.5, fill=hue, shape=shape,
+            stroke=design.SURFACE, stroke_width=1.0,
+        )
+        parts.append(
+            f'<text x="{chip_x + 18.0:.1f}" y="{legend_y:.1f}" font-size="11" '
+            f'fill="{design.INK_SECONDARY}">community {community.community_id}</text>'
+        )
+        chip_x += 118.0
+    if report.isolated:
+        design.svg_mark(
+            parts, x=chip_x + 6.0, y=legend_y - 4.0, r=5.5,
+            fill=design.OVERFLOW_FILL, shape=design.OVERFLOW_SHAPE,
+            stroke=design.SURFACE, stroke_width=1.0,
+        )
+        parts.append(
+            f'<text x="{chip_x + 18.0:.1f}" y="{legend_y:.1f}" font-size="11" '
+            f'fill="{design.INK_SECONDARY}">ungrouped</text>'
+        )
+
+    cursor_y = int(legend_y) + 18
     if report.isolated:
         names = ", ".join(_pretty(item) for item in report.isolated)
         parts.append(
             f'<text x="{margin}" y="{cursor_y + 4}" font-size="11" '
-            f'fill="{_SVG_INK_SECONDARY}">No qualifying edges (ungrouped): '
+            f'fill="{design.INK_SECONDARY}">No qualifying edges (ungrouped): '
             f"{_svg_escape(names)}</text>"
         )
-        cursor_y += isolated_h
+        cursor_y += 22
 
     parts.append(
         f'<text x="{margin}" y="{cursor_y + 16}" font-size="12.5" font-weight="bold" '
-        f'fill="{_SVG_INK}">Bridges between communities (cross-merchandising '
+        f'fill="{design.INK}">Bridges between communities (cross-merchandising '
         f"candidates)</text>"
     )
+    bridges_shown = report.bridges[:6]
     if bridges_shown:
         for i, edge in enumerate(bridges_shown):
             line_y = cursor_y + 36 + 18 * i
@@ -515,7 +668,7 @@ def render_affinity_svg(report: AffinityReport) -> str:
             community_b = report.membership[edge.item_b]
             parts.append(
                 f'<text x="{margin}" y="{line_y}" font-size="11" '
-                f'fill="{_SVG_INK_SECONDARY}">{_svg_escape(_pretty(edge.item_a))} '
+                f'fill="{design.INK_SECONDARY}">{_svg_escape(_pretty(edge.item_a))} '
                 f"&#8212; {_svg_escape(_pretty(edge.item_b))} &#183; lift "
                 f"{edge.lift:.2f} &#183; {edge.support:.1%} of orders "
                 f"({edge.support_count}) &#183; communities {community_a} &#8596; "
@@ -525,22 +678,21 @@ def render_affinity_svg(report: AffinityReport) -> str:
     else:
         parts.append(
             f'<text x="{margin}" y="{cursor_y + 36}" font-size="11" '
-            f'fill="{_SVG_INK_SECONDARY}">None at these thresholds.</text>'
+            f'fill="{design.INK_SECONDARY}">None at these thresholds.</text>'
         )
         cursor_y += 36 + 6
 
-    parts.append(
-        f'<line x1="{margin}" y1="{cursor_y + 12}" x2="{width - margin}" '
-        f'y2="{cursor_y + 12}" stroke="{_SVG_BASELINE}" stroke-width="1"/>'
-    )
-    parts.append(
-        f'<text x="{margin}" y="{cursor_y + 34}" font-size="10" '
-        f'fill="{_SVG_INK_MUTED}">SYNTHETIC DATA: all figures come from a seeded '
-        f"simulation. Communities are observed co-purchase structure -- correlation, "
-        f"not causation; modularity is a heuristic grouping.</text>"
-    )
-    parts.append("</svg>")
-    return "\n".join(parts)
+    height = design.svg_footer_caption(
+        parts,
+        width=width,
+        y=cursor_y + 12,
+        text=(
+            "SYNTHETIC DATA: all figures come from a seeded simulation. Communities "
+            "are observed co-purchase structure -- correlation, not causation; "
+            "modularity is a heuristic grouping."
+        ),
+    ) + 10
+    return design.svg_close(parts, width=width, height=height)
 
 
 def write_affinity_svg(report: AffinityReport, path: str) -> int:

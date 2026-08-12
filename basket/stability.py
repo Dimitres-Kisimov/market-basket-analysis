@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from basket import design
 from basket.apriori import apriori
 from basket.rules import Rule, format_itemset, generate_rules
 
@@ -315,19 +316,26 @@ def write_stability_csv(report: StabilityReport, path: str) -> int:
     return os.path.getsize(path)
 
 
-# SVG palette (matches the deliverables' light surface).
-_SVG_INK = "#0b0b0b"
-_SVG_INK_SECONDARY = "#52514e"
-_SVG_INK_MUTED = "#898781"
-_SVG_SURFACE = "#fcfcfb"
-_SVG_TRACK = "#f0efec"
-_SVG_BASELINE = "#c3c2b7"
-_SVG_STABLE = "#008300"  # green: persists in every split
-_SVG_UNSTABLE = "#eda100"  # amber: window-specific
+# Visual system: shared category-atlas tokens (see basket/design.py). The
+# verdict is a STATUS (good vs needs-a-look), so the bars wear the reserved
+# status colours -- never the categorical palette -- and the warning fill
+# carries a tone-on-tone hatch so the verdict is never colour alone (each row
+# also prints its n/n split fraction).
+_svg_escape = design.svg_escape
+
+_HATCH_ID = "atlas-hatch-warning"
 
 
-def _svg_escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def _hatch_defs() -> str:
+    """45-degree tone-on-tone hatch for the window-specific (warning) bars."""
+    return (
+        f'<defs><pattern id="{_HATCH_ID}" patternUnits="userSpaceOnUse" '
+        f'width="6" height="6" patternTransform="rotate(45)">'
+        f'<rect width="6" height="6" fill="{design.STATUS_WARNING}"/>'
+        f'<line x1="0" y1="0" x2="0" y2="6" '
+        f'stroke="{design.STATUS_WARNING_DEEP}" stroke-width="1.6"/>'
+        f"</pattern></defs>"
+    )
 
 
 def _truncate(text: str, limit: int = 46) -> str:
@@ -342,107 +350,108 @@ def render_stability_svg(report: StabilityReport) -> str:
     so the bytes are identical on every run.
     """
     width = 900
-    margin_left = 36
+    margin_left = design.SVG_MARGIN
     bar_x = 430
     bar_w = 300
     row_h = 30
-    top_pad = 104
-    bottom_pad = 96
     rows = report.rules
-    height = top_pad + row_h * len(rows) + bottom_pad
 
     method_phrase = (
         f"{report.n_splits} time windows"
         if report.method == "time_window"
         else f"{report.n_splits} bootstrap resamples"
     )
-    parts: list[str] = []
-    parts.append(
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" font-family="Segoe UI, Helvetica, Arial, sans-serif">'
+    parts = design.svg_open(width, 10)  # height patched at the end
+    parts.append(_hatch_defs())
+    header_bottom = design.svg_plate_header(
+        parts,
+        width=width,
+        plate="stability",
+        title=f"Rule stability across {_svg_escape(method_phrase)}",
+        subtitle=(
+            f"{report.n_stable} of the top {len(rows)} rules by lift clear support/"
+            f"confidence/lift in every split."
+        ),
+        note=(
+            f"Thresholds: support &gt;= {report.min_support:.0%}, confidence &gt;= "
+            f"{report.min_confidence:.0%}, lift &gt;= {report.min_lift:.2f}. "
+            f"Synthetic seeded data."
+        ),
     )
-    parts.append(f'<rect width="{width}" height="{height}" fill="{_SVG_SURFACE}"/>')
-    parts.append(
-        f'<text x="{margin_left}" y="40" font-size="20" font-weight="bold" '
-        f'fill="{_SVG_INK}">Rule stability across {_svg_escape(method_phrase)}</text>'
-    )
-    parts.append(
-        f'<text x="{margin_left}" y="64" font-size="12.5" fill="{_SVG_INK_SECONDARY}">'
-        f"{report.n_stable} of the top {len(rows)} rules by lift clear support/"
-        f"confidence/lift in every split.</text>"
-    )
-    parts.append(
-        f'<text x="{margin_left}" y="82" font-size="11" fill="{_SVG_INK_MUTED}">'
-        f"Thresholds: support &gt;= {report.min_support:.0%}, confidence &gt;= "
-        f"{report.min_confidence:.0%}, lift &gt;= {report.min_lift:.2f}. "
-        f"Synthetic seeded data.</text>"
-    )
+    top_pad = header_bottom + 16
     # Column headers.
     parts.append(
         f'<text x="{margin_left}" y="{top_pad - 8}" font-size="10.5" '
-        f'font-weight="bold" fill="{_SVG_INK_SECONDARY}">rule (antecedent -&gt; '
+        f'font-weight="bold" fill="{design.INK_SECONDARY}">rule (antecedent -&gt; '
         f"consequent)</text>"
     )
     parts.append(
         f'<text x="{bar_x}" y="{top_pad - 8}" font-size="10.5" font-weight="bold" '
-        f'fill="{_SVG_INK_SECONDARY}">stability score</text>'
+        f'fill="{design.INK_SECONDARY}">stability score</text>'
     )
 
     for i, item in enumerate(rows):
         row_top = top_pad + i * row_h
         text_y = row_top + 18
-        color = _SVG_STABLE if item.stable else _SVG_UNSTABLE
+        fill = design.STATUS_GOOD if item.stable else f"url(#{_HATCH_ID})"
         label = _svg_escape(_truncate(item.label))
         parts.append(
             f'<text x="{margin_left}" y="{text_y}" font-size="11.5" '
-            f'fill="{_SVG_INK}">{label}</text>'
+            f'fill="{design.INK}">{label}</text>'
         )
         parts.append(
             f'<rect x="{bar_x}" y="{row_top + 5}" width="{bar_w}" height="16" '
-            f'rx="3" fill="{_SVG_TRACK}"/>'
+            f'rx="3" fill="{design.NEUTRAL_FILL}"/>'
         )
         value_w = round(bar_w * item.stability_score, 1)
         if value_w > 0:
             parts.append(
                 f'<rect x="{bar_x}" y="{row_top + 5}" width="{value_w}" height="16" '
-                f'rx="3" fill="{color}"/>'
+                f'rx="3" fill="{fill}"/>'
             )
         parts.append(
             f'<text x="{bar_x + bar_w + 10}" y="{text_y}" font-size="11" '
-            f'fill="{_SVG_INK_SECONDARY}">{item.stability_score:.0%} '
+            f'fill="{design.INK_SECONDARY}">{item.stability_score:.0%} '
             f"({item.n_present}/{item.n_splits}) &#183; lift "
             f"{item.reference_lift:.2f}</text>"
         )
 
-    # Legend + disclaimer.
+    # Legend (status = icon + label, never colour alone) + disclaimer.
     legend_y = top_pad + row_h * len(rows) + 24
     parts.append(
         f'<rect x="{margin_left}" y="{legend_y - 11}" width="14" height="14" rx="3" '
-        f'fill="{_SVG_STABLE}"/>'
+        f'fill="{design.STATUS_GOOD}"/>'
+    )
+    parts.append(
+        f'<text x="{margin_left + 7}" y="{legend_y}" font-size="10" '
+        f'text-anchor="middle" fill="{design.SURFACE}">&#10003;</text>'
     )
     parts.append(
         f'<text x="{margin_left + 22}" y="{legend_y}" font-size="11" '
-        f'fill="{_SVG_INK_SECONDARY}">stable (every split)</text>'
+        f'fill="{design.INK_SECONDARY}">stable (every split)</text>'
     )
     parts.append(
         f'<rect x="{margin_left + 180}" y="{legend_y - 11}" width="14" height="14" '
-        f'rx="3" fill="{_SVG_UNSTABLE}"/>'
+        f'rx="3" fill="url(#{_HATCH_ID})"/>'
+    )
+    parts.append(
+        f'<text x="{margin_left + 187}" y="{legend_y}" font-size="10" '
+        f'font-weight="bold" text-anchor="middle" fill="{design.INK}">!</text>'
     )
     parts.append(
         f'<text x="{margin_left + 202}" y="{legend_y}" font-size="11" '
-        f'fill="{_SVG_INK_SECONDARY}">window-specific</text>'
+        f'fill="{design.INK_SECONDARY}">window-specific</text>'
     )
-    parts.append(
-        f'<line x1="{margin_left}" y1="{legend_y + 16}" x2="{width - margin_left}" '
-        f'y2="{legend_y + 16}" stroke="{_SVG_BASELINE}" stroke-width="1"/>'
-    )
-    parts.append(
-        f'<text x="{margin_left}" y="{legend_y + 38}" font-size="10" '
-        f'fill="{_SVG_INK_MUTED}">SYNTHETIC DATA: all figures come from a seeded '
-        f"simulation. Lift is observational -- correlation is not causation.</text>"
-    )
-    parts.append("</svg>")
-    return "\n".join(parts)
+    height = design.svg_footer_caption(
+        parts,
+        width=width,
+        y=legend_y + 16,
+        text=(
+            "SYNTHETIC DATA: all figures come from a seeded simulation. Lift is "
+            "observational -- correlation is not causation."
+        ),
+    ) + 10
+    return design.svg_close(parts, width=width, height=height)
 
 
 def write_stability_svg(report: StabilityReport, path: str) -> int:

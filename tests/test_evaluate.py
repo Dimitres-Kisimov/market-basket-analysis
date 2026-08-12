@@ -184,4 +184,5 @@ def test_csv_and_svg_writers_deterministic(baskets, tmp_path):
     svg = render_evaluation_svg(report)
     assert svg.startswith("<svg")
     assert "recommender back-test" in svg.lower()
+    assert "CATEGORY ATLAS" in svg and "PLATE 07 / 07" in svg  # atlas plate header
     assert render_evaluation_svg(report) == svg  # pure function of the report

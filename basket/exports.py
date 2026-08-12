@@ -9,6 +9,7 @@ and the correlation-is-not-causation note.
 from __future__ import annotations
 
 import os
+import textwrap
 from dataclasses import dataclass
 from datetime import date
 
@@ -17,11 +18,13 @@ import pandas as pd
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from basket import design
 from basket.affinity import (
     AffinityReport,
     affinity_network,
@@ -74,18 +77,74 @@ EVALUATION_K_VALUES: tuple[int, ...] = (1, 3, 5)
 # threshold is the run's min lift floored at 1.0.
 NETWORK_MIN_LIFT_FLOOR = 1.0
 
-# Chart chrome and palette (validated defaults; light surface).
-_INK = "#0b0b0b"
-_INK_SECONDARY = "#52514e"
-_INK_MUTED = "#898781"
-_GRID = "#e1e0d9"
-_BASELINE = "#c3c2b7"
-_SURFACE = "#fcfcfb"
-_NEUTRAL_FILL = "#f0efec"
-_SERIES = ("#2a78d6", "#008300", "#e87ba4", "#eda100", "#1baf7a", "#eb6834")
-_DIVERGING = ("#2a78d6", "#f0efec", "#e34948")  # blue <-> gray(=lift 1) <-> red
+# Chart chrome and palette: the shared category-atlas system (basket/design.py).
+_INK = design.INK
+_INK_SECONDARY = design.INK_SECONDARY
+_INK_MUTED = design.INK_MUTED
+_GRID = design.GRID
+_BASELINE = design.BASELINE
+_SURFACE = design.SURFACE
+_NEUTRAL_FILL = design.NEUTRAL_FILL
+_DIVERGING = design.DIVERGING  # blue <-> gray(=lift 1) <-> red
 
 _A4_LANDSCAPE = (11.69, 8.27)
+
+# Atlas page grid: one margin, one typographic scale, on every page.
+_MARGIN_X = 0.06
+_RIGHT_X = 0.94
+_EYEBROW_SIZE = 7.5
+_TITLE_SIZE = 17
+_SUBTITLE_SIZE = 9.5
+_BODY_SIZE = 9.5
+_TABLE_SIZE = 7.5
+_FOOTER_SIZE = 7.5
+
+#: Titles for the cover's plate index, in atlas order.
+_PLATE_TITLES = {
+    "rules": "Top association rules",
+    "redundancy": "Minimal non-redundant rule set",
+    "heatmap": "Category-pair lift heatmap",
+    "network": "Category affinity communities",
+    "segments": "Customer segments",
+    "stability": "Rule stability",
+    "backtest": "Recommender back-test",
+}
+
+
+def _body_paragraph(fig: Figure, text: str) -> None:
+    """Lead paragraph wrapped to the atlas margins (not the figure edge)."""
+    fig.text(
+        _MARGIN_X, getattr(fig, "_atlas_body_top", 0.850), textwrap.fill(text, 142),
+        fontsize=_BODY_SIZE, color=_INK, va="top", linespacing=1.45,
+    )
+
+
+def _hairline(fig: Figure, y: float, color: str = _GRID, lw: float = 0.8) -> None:
+    fig.add_artist(
+        Line2D([_MARGIN_X, _RIGHT_X], [y, y], transform=fig.transFigure,
+               color=color, linewidth=lw)
+    )
+
+
+def _style_table(table, *, fontsize: float = _TABLE_SIZE, scale: float = 1.5,
+                 left_cols: tuple[int, ...] = ()) -> None:
+    """The atlas table: bold ink header on the neutral band, secondary body,
+    hairline rules, tabular alignment (text columns left, figures centred)."""
+    table.auto_set_font_size(False)
+    table.set_fontsize(fontsize)
+    table.scale(1.0, scale)
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor(_GRID)
+        cell.set_linewidth(0.6)
+        if row == 0:
+            cell.set_text_props(fontweight="bold", color=_INK)
+            cell.set_facecolor(_NEUTRAL_FILL)
+        else:
+            cell.set_text_props(color=_INK_SECONDARY)
+            cell.set_facecolor(_SURFACE)
+        if col in left_cols:
+            cell.set_text_props(horizontalalignment="left")
+            cell.PAD = 0.02
 
 
 @dataclass
@@ -207,16 +266,35 @@ def _pair_lift_matrix(
     return lift
 
 
-def _new_page(title: str, subtitle: str) -> Figure:
+def _new_page(title: str, subtitle: str, plate: str) -> Figure:
+    """A numbered atlas plate: eyebrow, title, subtitle, hairline rules and the
+    honesty caption anchored in the footer of every page."""
     fig = Figure(figsize=_A4_LANDSCAPE, facecolor=_SURFACE)
-    fig.text(0.06, 0.94, title, fontsize=17, fontweight="bold", color=_INK)
-    fig.text(0.06, 0.905, subtitle, fontsize=9.5, color=_INK_SECONDARY)
-    fig.text(0.06, 0.035, DISCLAIMER, fontsize=7.5, color=_INK_MUTED)
+    fig.text(
+        _MARGIN_X, 0.955, design.plate_eyebrow(plate),
+        fontsize=_EYEBROW_SIZE, color=_INK_MUTED,
+    )
+    fig.text(_MARGIN_X, 0.912, title, fontsize=_TITLE_SIZE, fontweight="bold", color=_INK)
+    wrapped = textwrap.fill(subtitle, 150)
+    fig.text(
+        _MARGIN_X, 0.890, wrapped, fontsize=_SUBTITLE_SIZE, color=_INK_SECONDARY,
+        va="top", linespacing=1.4,
+    )
+    rule_y = 0.868 - 0.020 * wrapped.count("\n")
+    _hairline(fig, rule_y)
+    fig._atlas_body_top = rule_y - 0.016  # where lead paragraphs may begin
+    _hairline(fig, 0.058)
+    fig.text(_MARGIN_X, 0.035, DISCLAIMER, fontsize=_FOOTER_SIZE, color=_INK_MUTED)
+    fig.text(
+        _RIGHT_X, 0.035, f"Plate {design.PLATES[plate]:02d} / {design.N_PLATES:02d}",
+        fontsize=_FOOTER_SIZE, color=_INK_MUTED, ha="right",
+    )
     return fig
 
 
 def _cover_page(pdf: PdfPages, result: AnalysisResult) -> None:
     fig = Figure(figsize=_A4_LANDSCAPE, facecolor=_SURFACE)
+    fig.text(0.08, 0.865, "CATEGORY ATLAS", fontsize=9, color=_INK_MUTED)
     fig.text(
         0.08, 0.80, "Cross-Sell Opportunity Analysis",
         fontsize=26, fontweight="bold", color=_INK,
@@ -233,6 +311,7 @@ def _cover_page(pdf: PdfPages, result: AnalysisResult) -> None:
         f"{result.min_confidence:.0%}  |  min lift {result.min_lift:.2f}",
         fontsize=9, color=_INK_MUTED,
     )
+    _hairline(fig, 0.675)
 
     top = result.rules[0] if result.rules else None
     tiles = [
@@ -255,16 +334,25 @@ def _cover_page(pdf: PdfPages, result: AnalysisResult) -> None:
         )
 
     fig.text(
-        0.08, 0.30, DISCLAIMER + "\n" + CAUSATION_NOTE,
+        0.08, 0.30,
+        textwrap.fill(DISCLAIMER, 58) + "\n" + textwrap.fill(CAUSATION_NOTE, 58),
         fontsize=10, color=_INK,
         bbox={
             "boxstyle": "round,pad=0.6",
             "facecolor": _NEUTRAL_FILL,
             "edgecolor": _BASELINE,
         },
-        va="top", wrap=True,
+        va="top",
     )
-    fig.text(0.08, 0.09, "Author: Dimitres Kisimov", fontsize=9, color=_INK_MUTED)
+
+    # Plate index: the atlas contents, numbered like the pages that follow.
+    fig.text(0.60, 0.30, "In this atlas", fontsize=10, fontweight="bold", color=_INK)
+    for i, (key, title) in enumerate(_PLATE_TITLES.items()):
+        y = 0.265 - i * 0.027
+        fig.text(0.60, y, f"Plate {design.PLATES[key]:02d}", fontsize=9, color=_INK_MUTED)
+        fig.text(0.665, y, title, fontsize=9, color=_INK_SECONDARY)
+
+    fig.text(0.08, 0.062, "Author: Dimitres Kisimov", fontsize=9, color=_INK_MUTED)
     pdf.savefig(fig)
 
 
@@ -273,8 +361,9 @@ def _rules_page(pdf: PdfPages, result: AnalysisResult, max_rows: int = 12) -> No
         "Top association rules (ranked by lift)",
         f"Filtered at confidence >= {result.min_confidence:.0%} and lift >= "
         f"{result.min_lift:.2f}. Lift is observational -- correlation is not causation.",
+        "rules",
     )
-    ax = fig.add_axes((0.05, 0.10, 0.90, 0.76))
+    ax = fig.add_axes((0.05, 0.10, 0.90, 0.74))
     ax.axis("off")
     header = ["Rule", "Support", "Orders", "Confidence", "Lift", "Conviction", "Note"]
     body = []
@@ -298,17 +387,7 @@ def _rules_page(pdf: PdfPages, result: AnalysisResult, max_rows: int = 12) -> No
         cellLoc="center",
         colWidths=[0.40, 0.09, 0.08, 0.11, 0.08, 0.11, 0.13],
     )
-    table.auto_set_font_size(False)
-    table.set_fontsize(8.5)
-    table.scale(1.0, 1.55)
-    for (row, _col), cell in table.get_celld().items():
-        cell.set_edgecolor(_GRID)
-        if row == 0:
-            cell.set_text_props(fontweight="bold", color=_INK)
-            cell.set_facecolor(_NEUTRAL_FILL)
-        else:
-            cell.set_text_props(color=_INK_SECONDARY)
-            cell.set_facecolor(_SURFACE)
+    _style_table(table, fontsize=8.5, scale=1.55, left_cols=(0,))
     pdf.savefig(fig)
 
 
@@ -317,12 +396,10 @@ def _redundancy_page(pdf: PdfPages, report: RedundancyReport, max_rows: int = 8)
         "Minimal non-redundant rule set (redundancy pruning)",
         "A rule is REDUNDANT when a simpler same-consequent rule predicts at least as "
         "confidently (improvement <= 0); pruning it loses nothing.",
+        "redundancy",
     )
-    fig.text(
-        0.06, 0.855, report.plain_language(),
-        fontsize=9.5, color=_INK, va="top", wrap=True,
-    )
-    ax = fig.add_axes((0.05, 0.42, 0.90, 0.36))
+    _body_paragraph(fig, report.plain_language())
+    ax = fig.add_axes((0.05, 0.38, 0.90, 0.33))
     ax.axis("off")
     header = [
         "Non-redundant rule (top by improvement)", "Lift", "Confidence",
@@ -348,19 +425,9 @@ def _redundancy_page(pdf: PdfPages, report: RedundancyReport, max_rows: int = 8)
         cellLoc="center",
         colWidths=[0.36, 0.06, 0.10, 0.11, 0.37],
     )
-    table.auto_set_font_size(False)
-    table.set_fontsize(7.5)
-    table.scale(1.0, 1.5)
-    for (row, _col), cell in table.get_celld().items():
-        cell.set_edgecolor(_GRID)
-        if row == 0:
-            cell.set_text_props(fontweight="bold", color=_INK)
-            cell.set_facecolor(_NEUTRAL_FILL)
-        else:
-            cell.set_text_props(color=_INK_SECONDARY)
-            cell.set_facecolor(_SURFACE)
+    _style_table(table, left_cols=(0, 4))
 
-    ax2 = fig.add_axes((0.05, 0.12, 0.90, 0.32))
+    ax2 = fig.add_axes((0.05, 0.10, 0.90, 0.30))
     ax2.axis("off")
     pruned_header = [
         "Pruned rule (redundant)", "Lift", "Confidence", "Covered by", "Covering conf.",
@@ -385,22 +452,26 @@ def _redundancy_page(pdf: PdfPages, report: RedundancyReport, max_rows: int = 8)
         cellLoc="center",
         colWidths=[0.38, 0.06, 0.10, 0.34, 0.12],
     )
-    pruned_table.auto_set_font_size(False)
-    pruned_table.set_fontsize(7.5)
-    pruned_table.scale(1.0, 1.5)
-    for (row, _col), cell in pruned_table.get_celld().items():
-        cell.set_edgecolor(_GRID)
-        if row == 0:
-            cell.set_text_props(fontweight="bold", color=_INK)
-            cell.set_facecolor(_NEUTRAL_FILL)
-        else:
-            cell.set_text_props(color=_INK_SECONDARY)
-            cell.set_facecolor(_SURFACE)
+    _style_table(pruned_table, left_cols=(0, 3))
     pdf.savefig(fig)
 
 
-def _heatmap_page(pdf: PdfPages, result: AnalysisResult) -> None:
-    categories = sorted({item for basket in result.baskets for item in basket})
+_SHAPE_MARKERS = {"circle": "o", "square": "s", "diamond": "D"}
+
+
+def _heatmap_page(
+    pdf: PdfPages, result: AnalysisResult, affinity_report: AffinityReport
+) -> None:
+    styles = design.category_styles(
+        [(c.community_id, c.members) for c in affinity_report.communities]
+    )
+    categories = sorted(
+        {item for basket in result.baskets for item in basket},
+        key=lambda c: (
+            styles[c].community_id if c in styles else len(affinity_report.communities),
+            c,
+        ),
+    )
     lift = _pair_lift_matrix(result.baskets, categories)
     finite = lift[np.isfinite(lift)]
     vmin = min(0.85, float(finite.min())) if finite.size else 0.5
@@ -409,9 +480,10 @@ def _heatmap_page(pdf: PdfPages, result: AnalysisResult) -> None:
     fig = _new_page(
         "Category-pair lift heatmap",
         "Gray = independence (lift 1.0), red = bought together more than chance, "
-        "blue = less. Diagonal masked.",
+        "blue = less. Diagonal masked; rows and columns grouped by affinity community.",
+        "heatmap",
     )
-    ax = fig.add_axes((0.16, 0.16, 0.62, 0.68))
+    ax = fig.add_axes((0.16, 0.16, 0.62, 0.66))
     cmap = LinearSegmentedColormap.from_list("lift_diverging", _DIVERGING)
     cmap.set_bad(_SURFACE)
     norm = TwoSlopeNorm(vmin=vmin, vcenter=1.0, vmax=vmax)
@@ -421,8 +493,27 @@ def _heatmap_page(pdf: PdfPages, result: AnalysisResult) -> None:
     ax.set_xticks(range(len(categories)), labels, rotation=45, ha="right", fontsize=7)
     ax.set_yticks(range(len(categories)), labels, fontsize=7)
     ax.tick_params(colors=_INK_MUTED, length=0)
+    ax.tick_params(axis="y", pad=12)
     for spine in ax.spines.values():
         spine.set_color(_BASELINE)
+
+    # Atlas identity chips beside each row label (community hue + shape), and
+    # a surface gap wherever the community block changes.
+    for i, category in enumerate(categories):
+        style = styles.get(category)
+        if style is None:
+            continue
+        ax.scatter(
+            [-0.82], [i], marker=_SHAPE_MARKERS.get(style.shape, "o"), s=26,
+            color=style.fill, clip_on=False, zorder=5, linewidths=0,
+        )
+    for i in range(1, len(categories)):
+        prev, this = categories[i - 1], categories[i]
+        prev_id = styles[prev].community_id if prev in styles else -1
+        this_id = styles[this].community_id if this in styles else -1
+        if prev_id != this_id:
+            ax.axhline(i - 0.5, color=_SURFACE, linewidth=2)
+            ax.axvline(i - 0.5, color=_SURFACE, linewidth=2)
 
     # Selective direct labels: only clearly non-independent pairs get a number.
     for i in range(len(categories)):
@@ -448,12 +539,10 @@ def _network_page(pdf: PdfPages, report: AffinityReport) -> None:
         f"{report.n_nodes} categories, {report.n_edges} lift-weighted edges (pair "
         f"support >= {report.min_support:.0%}, lift >= {report.min_lift:.2f}), grouped "
         "by greedy modularity. Assortment structure, observational -- not causation.",
+        "network",
     )
-    fig.text(
-        0.06, 0.855, report.plain_language(),
-        fontsize=9.5, color=_INK, va="top", wrap=True,
-    )
-    ax = fig.add_axes((0.05, 0.42, 0.90, 0.36))
+    _body_paragraph(fig, report.plain_language())
+    ax = fig.add_axes((0.05, 0.40, 0.90, 0.34))
     ax.axis("off")
     header = ["Community", "Categories", "Size", "Edges", "Avg lift", "Max lift", "Top internal pair"]
     body = []
@@ -481,17 +570,12 @@ def _network_page(pdf: PdfPages, report: AffinityReport) -> None:
         cellLoc="center",
         colWidths=[0.09, 0.38, 0.06, 0.06, 0.08, 0.08, 0.25],
     )
-    table.auto_set_font_size(False)
-    table.set_fontsize(7.5)
-    table.scale(1.0, 1.5)
-    for (row, _col), cell in table.get_celld().items():
-        cell.set_edgecolor(_GRID)
-        if row == 0:
-            cell.set_text_props(fontweight="bold", color=_INK)
-            cell.set_facecolor(_NEUTRAL_FILL)
-        else:
-            cell.set_text_props(color=_INK_SECONDARY)
-            cell.set_facecolor(_SURFACE)
+    _style_table(table, left_cols=(1, 6))
+    # Community id cells wear the community's hue as a tint (id text stays ink).
+    for row, community in enumerate(report.communities, start=1):
+        hue = design.community_hue(community.community_id, community.n_members)
+        if hue is not None:
+            table[row, 0].set_facecolor(design.tint(hue, 0.15))
 
     ax2 = fig.add_axes((0.05, 0.10, 0.90, 0.26))
     ax2.axis("off")
@@ -517,27 +601,29 @@ def _network_page(pdf: PdfPages, report: AffinityReport) -> None:
         cellLoc="center",
         colWidths=[0.40, 0.08, 0.10, 0.08, 0.24],
     )
-    bridge_table.auto_set_font_size(False)
-    bridge_table.set_fontsize(7.5)
-    bridge_table.scale(1.0, 1.5)
-    for (row, _col), cell in bridge_table.get_celld().items():
-        cell.set_edgecolor(_GRID)
-        if row == 0:
-            cell.set_text_props(fontweight="bold", color=_INK)
-            cell.set_facecolor(_NEUTRAL_FILL)
-        else:
-            cell.set_text_props(color=_INK_SECONDARY)
-            cell.set_facecolor(_SURFACE)
+    _style_table(bridge_table, left_cols=(0, 4))
     pdf.savefig(fig)
 
 
-def _segments_page(pdf: PdfPages, result: AnalysisResult) -> None:
+def _segments_page(
+    pdf: PdfPages, result: AnalysisResult, affinity_report: AffinityReport
+) -> None:
     segmentation = result.segmentation
     k = len(segmentation.profiles)
+    styles = design.category_styles(
+        [(c.community_id, c.members) for c in affinity_report.communities]
+    )
     fig = _new_page(
         "Customer segments (k-means on spend shares)",
         "Descriptive clustering of per-customer category spend mix; "
         "bar length = share of segment spend (centroid).",
+        "segments",
+    )
+    fig.text(
+        0.06, 0.850,
+        "Bar colours = the atlas category palette (hue = affinity community, "
+        "lightness step = member; same colours as the network and heatmap plates).",
+        fontsize=8.5, color=_INK_MUTED, va="top",
     )
     spend_columns = list(segmentation.spend.columns)
     slot_width = 0.90 / k
@@ -546,9 +632,13 @@ def _segments_page(pdf: PdfPages, result: AnalysisResult) -> None:
         ax = fig.add_axes((0.115 + j * slot_width, 0.18, slot_width - 0.105, 0.55))
         centroid = segmentation.kmeans_result.centroids[j]
         top_idx = np.argsort(-centroid)[:6][::-1]
-        names = [str(spend_columns[i]).replace("_", " ") for i in top_idx]
+        keys = [str(spend_columns[i]) for i in top_idx]
+        names = [key.replace("_", " ") for key in keys]
         shares = centroid[top_idx]
-        bars = ax.barh(names, shares, color=_SERIES[j % len(_SERIES)], height=0.55)
+        colors = [
+            styles[key].fill if key in styles else design.OVERFLOW_FILL for key in keys
+        ]
+        bars = ax.barh(names, shares, color=colors, height=0.55)
         for bar, share in zip(bars, shares, strict=True):
             ax.text(
                 bar.get_width() + max(shares) * 0.03,
@@ -582,11 +672,9 @@ def _stability_page(
         "Rule stability (robustness check)",
         f"Top {report.top_n} rules re-mined across {method_phrase}. A rule is "
         "STABLE only if it clears every threshold in every split.",
+        "stability",
     )
-    fig.text(
-        0.06, 0.855, report.plain_language(),
-        fontsize=9.5, color=_INK, va="top", wrap=True,
-    )
+    _body_paragraph(fig, report.plain_language())
     ax = fig.add_axes((0.05, 0.09, 0.90, 0.70))
     ax.axis("off")
     header = ["Rule", "Lift", "Support", "Stability", "Splits", "Lift CV", "Verdict"]
@@ -610,21 +698,14 @@ def _stability_page(
         cellLoc="center",
         colWidths=[0.42, 0.07, 0.09, 0.10, 0.08, 0.09, 0.10],
     )
-    table.auto_set_font_size(False)
-    table.set_fontsize(7.5)
-    table.scale(1.0, 1.2)
+    _style_table(table, scale=1.2, left_cols=(0,))
     stable_flags = [item.stable for item in report.rules[:max_rows]]
-    for (row, col), cell in table.get_celld().items():
-        cell.set_edgecolor(_GRID)
-        if row == 0:
-            cell.set_text_props(fontweight="bold", color=_INK)
-            cell.set_facecolor(_NEUTRAL_FILL)
-            continue
-        cell.set_text_props(color=_INK_SECONDARY)
-        if col == 6:  # verdict column: green when stable, amber when not
-            cell.set_facecolor("#e3f0e0" if stable_flags[row - 1] else "#faedcf")
-        else:
-            cell.set_facecolor(_SURFACE)
+    for row, stable in enumerate(stable_flags, start=1):
+        # Verdict column wears the reserved status tints (never a series hue);
+        # the verdict word itself is the non-colour channel.
+        table[row, 6].set_facecolor(
+            design.TINT_GOOD if stable else design.TINT_WARNING
+        )
     pdf.savefig(fig)
 
 
@@ -634,12 +715,10 @@ def _evaluation_page(pdf: PdfPages, report: EvaluationReport) -> None:
         f"Leave-one-out on {report.n_trials} held-out baskets: rules mined on "
         f"{report.n_train} training baskets predict a hidden category vs a popularity "
         "baseline. Hit-rate is predictive fit -- not the causal uplift of an A/B test.",
+        "backtest",
     )
-    fig.text(
-        0.06, 0.855, report.plain_language(),
-        fontsize=9.5, color=_INK, va="top", wrap=True,
-    )
-    ax = fig.add_axes((0.06, 0.30, 0.88, 0.46))
+    _body_paragraph(fig, report.plain_language())
+    ax = fig.add_axes((0.06, 0.28, 0.88, 0.46))
     ax.axis("off")
     ratio = report.hit_rate_ratio()
     header = ["Metric", "Association rules", "Popularity baseline", "Rules / baseline"]
@@ -665,24 +744,21 @@ def _evaluation_page(pdf: PdfPages, report: EvaluationReport) -> None:
         cellLoc="center",
         colWidths=[0.22, 0.26, 0.26, 0.20],
     )
-    table.auto_set_font_size(False)
-    table.set_fontsize(9.5)
-    table.scale(1.0, 1.7)
+    _style_table(table, fontsize=9.5, scale=1.7, left_cols=(0,))
     for (row, col), cell in table.get_celld().items():
-        cell.set_edgecolor(_GRID)
-        if row == 0:
-            cell.set_text_props(fontweight="bold", color=_INK)
-            cell.set_facecolor(_NEUTRAL_FILL)
-        else:
-            cell.set_text_props(color=_INK_SECONDARY)
-            cell.set_facecolor("#e6effa" if col == 1 else _SURFACE)
+        if row > 0 and col == 1:  # "our" series column wears the slot-1 blue tint
+            cell.set_facecolor(design.TINT_BLUE)
     fig.text(
         0.06, 0.20,
-        f"Setup: arrival-order split at {report.train_fraction:.0%} (train earlier, "
-        f"test later); one category hidden per test basket (seed {report.seed}); "
-        f"{report.n_rules} rules mined on train at the run's thresholds. "
-        "Popularity baseline = most-frequent training categories not already in the basket.",
-        fontsize=8.5, color=_INK_MUTED, va="top", wrap=True,
+        textwrap.fill(
+            f"Setup: arrival-order split at {report.train_fraction:.0%} (train "
+            f"earlier, test later); one category hidden per test basket (seed "
+            f"{report.seed}); {report.n_rules} rules mined on train at the run's "
+            "thresholds. Popularity baseline = most-frequent training categories "
+            "not already in the basket.",
+            158,
+        ),
+        fontsize=8.5, color=_INK_MUTED, va="top", linespacing=1.4,
     )
     pdf.savefig(fig)
 
@@ -708,20 +784,35 @@ def export_pdf(
         _cover_page(pdf, result)
         _rules_page(pdf, result)
         _redundancy_page(pdf, redundancy_report)
-        _heatmap_page(pdf, result)
+        _heatmap_page(pdf, result, affinity_report)
         _network_page(pdf, affinity_report)
-        _segments_page(pdf, result)
+        _segments_page(pdf, result, affinity_report)
         _stability_page(pdf, stability_report)
         _evaluation_page(pdf, evaluation_report)
 
 
+def _xlsx_color(hex_color: str) -> str:
+    """``#rrggbb`` -> openpyxl aRGB."""
+    return "FF" + hex_color[1:].upper()
+
+
 def _style_header(sheet: Worksheet, row: int, n_columns: int) -> None:
-    fill = PatternFill("solid", fgColor="F0EFEC")
+    """The atlas table header: bold ink on the neutral band over a hairline."""
+    fill = PatternFill("solid", fgColor=_xlsx_color(design.NEUTRAL_FILL))
+    border = Border(bottom=Side(style="thin", color=_xlsx_color(design.BASELINE)))
     for column in range(1, n_columns + 1):
         cell = sheet.cell(row=row, column=column)
         cell.font = Font(bold=True)
         cell.fill = fill
+        cell.border = border
         cell.alignment = Alignment(horizontal="left")
+
+
+def _style_notes(sheet: Worksheet, n_rows: int) -> None:
+    """Honesty notes as designed captions: italic, secondary ink, up top."""
+    font = Font(italic=True, color=_xlsx_color(design.INK_SECONDARY))
+    for row in range(1, n_rows + 1):
+        sheet.cell(row=row, column=1).font = font
 
 
 def _set_widths(sheet: Worksheet, widths: list[int]) -> None:
@@ -776,6 +867,7 @@ def export_excel(
             ]
         )
     _style_header(sheet, header_row, 10)
+    _style_notes(sheet, 2)
     _set_widths(sheet, [46, 30, 22, 10, 8, 11, 8, 10, 11, 12])
     sheet.freeze_panes = f"A{header_row + 1}"
 
@@ -794,6 +886,7 @@ def export_excel(
             ]
         )
     _style_header(sheet, 3, 4)
+    _style_notes(sheet, 1)
     _set_widths(sheet, [46, 7, 10, 9])
     sheet.freeze_panes = "A4"
 
@@ -842,6 +935,7 @@ def export_excel(
     sheet.cell(
         row=redundancy_header_row + len(redundancy_report.verdicts) + 2, column=1
     ).font = Font(bold=True)
+    _style_notes(sheet, 3)
     _set_widths(sheet, [6, 46, 10, 8, 11, 8, 12, 12, 40, 22])
     sheet.freeze_panes = f"A{redundancy_header_row + 1}"
 
@@ -870,6 +964,7 @@ def export_excel(
     for customer_id, segment in result.segmentation.assignments.items():
         sheet.append([customer_id, int(segment), round(float(totals[customer_id]), 2)])
     _style_header(sheet, assignments_header, 3)
+    _style_notes(sheet, 1)
     _set_widths(sheet, [12, 11, 18, 20, 60])
 
     sheet = workbook.create_sheet("Recommendations")
@@ -894,6 +989,7 @@ def export_excel(
             ]
         )
     _style_header(sheet, 4, 7)
+    _style_notes(sheet, 2)
     _set_widths(sheet, [6, 30, 22, 8, 11, 24, 110])
     sheet.freeze_panes = "A5"
 
@@ -932,6 +1028,13 @@ def export_excel(
             ]
         )
     _style_header(sheet, stability_header_row, 16)
+    _style_notes(sheet, 3)
+    # Verdict cells wear the reserved status tints (word stays the channel).
+    for offset, item in enumerate(stability_report.rules):
+        sheet.cell(row=stability_header_row + 1 + offset, column=15).fill = PatternFill(
+            "solid",
+            fgColor=_xlsx_color(design.TINT_GOOD if item.stable else design.TINT_WARNING),
+        )
     _set_widths(sheet, [6, 46, 9, 14, 11, 10, 8, 9, 14, 10, 9, 9, 9, 9, 8, 12])
     sheet.freeze_panes = f"A{stability_header_row + 1}"
 
@@ -995,6 +1098,12 @@ def export_excel(
         ]
     )
     sheet.cell(row=settings_row + 1, column=1).font = Font(bold=True)
+    _style_notes(sheet, 3)
+    # "Our" series row wears the slot-1 blue tint, as in the PDF and SVG.
+    for column in range(1, 6 + len(evaluation_report.k_values)):
+        sheet.cell(row=evaluation_header_row + 1, column=column).fill = PatternFill(
+            "solid", fgColor=_xlsx_color(design.TINT_BLUE)
+        )
     _set_widths(sheet, [26, 12, 12, 12, 12, 12, 12])
 
     sheet = workbook.create_sheet("Network")
@@ -1022,6 +1131,14 @@ def export_excel(
             ]
         )
     _style_header(sheet, communities_header_row, 7)
+    _style_notes(sheet, 3)
+    # Community id cells wear the community hue as a tint (id text stays ink).
+    for offset, community in enumerate(affinity_report.communities):
+        hue = design.community_hue(community.community_id, community.n_members)
+        if hue is not None:
+            sheet.cell(
+                row=communities_header_row + 1 + offset, column=1
+            ).fill = PatternFill("solid", fgColor=_xlsx_color(design.tint(hue, 0.15)))
     sheet.append([])
     edges_header_row = communities_header_row + len(affinity_report.communities) + 2
     sheet.append(
@@ -1045,6 +1162,17 @@ def export_excel(
             ]
         )
     _style_header(sheet, edges_header_row, 9)
+    members_of = {c.community_id: c.n_members for c in affinity_report.communities}
+    for offset, edge in enumerate(affinity_report.edges):
+        for column, item in ((7, edge.item_a), (8, edge.item_b)):
+            community_id = affinity_report.membership[item]
+            hue = design.community_hue(community_id, members_of.get(community_id, 1))
+            if hue is not None:
+                sheet.cell(
+                    row=edges_header_row + 1 + offset, column=column
+                ).fill = PatternFill(
+                    "solid", fgColor=_xlsx_color(design.tint(hue, 0.15))
+                )
     sheet.append([])
     sheet.append(
         [
@@ -1059,6 +1187,10 @@ def export_excel(
     )
     sheet.cell(row=edges_header_row + len(affinity_report.edges) + 2, column=1).font = Font(bold=True)
     _set_widths(sheet, [40, 10, 9, 8, 10, 15, 12, 12, 10])
+
+    # One quiet tab colour across the workbook: the sheets are plates of one atlas.
+    for worksheet in workbook.worksheets:
+        worksheet.sheet_properties.tabColor = _xlsx_color(design.GRID)
 
     workbook.save(path)
 

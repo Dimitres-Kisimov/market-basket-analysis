@@ -47,6 +47,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
 
+from basket import design
 from basket.rules import Rule, format_itemset, format_rule
 
 
@@ -304,18 +305,10 @@ def write_redundancy_csv(report: RedundancyReport, path: str) -> int:
     return os.path.getsize(path)
 
 
-# SVG palette (matches the deliverables' light surface / other charts).
-_SVG_INK = "#0b0b0b"
-_SVG_INK_SECONDARY = "#52514e"
-_SVG_INK_MUTED = "#898781"
-_SVG_SURFACE = "#fcfcfb"
-_SVG_TRACK = "#f0efec"
-_SVG_BASELINE = "#c3c2b7"
-_SVG_ACCENT = "#2a78d6"  # single hue: every bar is a count of the same funnel
-
-
-def _svg_escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+# Visual system: shared category-atlas tokens (see basket/design.py). The
+# funnel stages are ordinal, so each group takes monotone lightness steps of
+# the single blue hue (validated with the palette validator's --ordinal mode).
+_svg_escape = design.svg_escape
 
 
 def _truncate(text: str, limit: int = 46) -> str:
@@ -331,7 +324,7 @@ def render_redundancy_svg(report: RedundancyReport) -> str:
     No timestamps or randomness, so the bytes are identical on every run.
     """
     width = 900
-    margin = 36
+    margin = design.SVG_MARGIN
     bar_x = 430
     bar_w = 300
     row_h = 30
@@ -348,61 +341,58 @@ def render_redundancy_svg(report: RedundancyReport) -> str:
     ]
     pruned_shown = report.pruned[:8]
 
-    top_pad = 104
-    rules_top = top_pad + 24
+    parts = design.svg_open(width, 10)  # height patched at the end
+    top_pad = design.svg_plate_header(
+        parts,
+        width=width,
+        plate="redundancy",
+        title=(
+            f"Minimal non-redundant rule set: {report.n_kept} of "
+            f"{report.n_rules} rules carry all the information"
+        ),
+        subtitle=(
+            "A rule is redundant when a simpler rule with the same consequent "
+            "predicts at least as confidently (confidence improvement &lt;= 0)."
+        ),
+        note=(
+            "Improvement is measured against every simpler generalisation, "
+            "including the baseline P(consequent). Synthetic seeded data."
+        ),
+    )
+    rules_top = top_pad + 18
     itemsets_top = rules_top + len(rule_rows) * row_h + group_gap + 24
     pruned_top = itemsets_top + len(itemset_rows) * row_h + group_gap + 24
     pruned_h = 18 * len(pruned_shown) if pruned_shown else 18
-    height = pruned_top + pruned_h + 78
-
-    parts: list[str] = []
-    parts.append(
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" font-family="Segoe UI, Helvetica, Arial, sans-serif">'
-    )
-    parts.append(f'<rect width="{width}" height="{height}" fill="{_SVG_SURFACE}"/>')
-    parts.append(
-        f'<text x="{margin}" y="40" font-size="20" font-weight="bold" '
-        f'fill="{_SVG_INK}">Minimal non-redundant rule set: {report.n_kept} of '
-        f"{report.n_rules} rules carry all the information</text>"
-    )
-    parts.append(
-        f'<text x="{margin}" y="64" font-size="12.5" fill="{_SVG_INK_SECONDARY}">'
-        f"A rule is redundant when a simpler rule with the same consequent predicts "
-        f"at least as confidently (confidence improvement &lt;= 0).</text>"
-    )
-    parts.append(
-        f'<text x="{margin}" y="82" font-size="11" fill="{_SVG_INK_MUTED}">'
-        f"Improvement is measured against every simpler generalisation, including "
-        f"the baseline P(consequent). Synthetic seeded data.</text>"
-    )
 
     def bar_group(title: str, rows: list[tuple[str, int]], group_top: int) -> None:
         parts.append(
             f'<text x="{margin}" y="{group_top - 8}" font-size="12" '
-            f'font-weight="bold" fill="{_SVG_INK}">{_svg_escape(title)}</text>'
+            f'font-weight="bold" fill="{design.INK}">{_svg_escape(title)}</text>'
         )
         group_max = max((count for _, count in rows), default=0)
+        # Funnel stages are ordered, so they take an ordinal lightness ramp of
+        # the single blue hue: light at the wide end, dark at the distilled end.
+        ramp = design.member_ramp(design.SERIES_BLUE, len(rows))
         for i, (label, count) in enumerate(rows):
             row_top = group_top + i * row_h
             text_y = row_top + 18
             parts.append(
                 f'<text x="{margin}" y="{text_y}" font-size="11.5" '
-                f'fill="{_SVG_INK}">{_svg_escape(label)}</text>'
+                f'fill="{design.INK}">{_svg_escape(label)}</text>'
             )
             parts.append(
                 f'<rect x="{bar_x}" y="{row_top + 5}" width="{bar_w}" height="16" '
-                f'rx="3" fill="{_SVG_TRACK}"/>'
+                f'rx="3" fill="{design.NEUTRAL_FILL}"/>'
             )
             value_w = round(bar_w * count / group_max, 1) if group_max else 0.0
             if value_w > 0:
                 parts.append(
                     f'<rect x="{bar_x}" y="{row_top + 5}" width="{value_w}" '
-                    f'height="16" rx="3" fill="{_SVG_ACCENT}"/>'
+                    f'height="16" rx="3" fill="{ramp[i]}"/>'
                 )
             parts.append(
                 f'<text x="{bar_x + bar_w + 10}" y="{text_y}" font-size="11" '
-                f'fill="{_SVG_INK_SECONDARY}">{count}</text>'
+                f'fill="{design.INK_SECONDARY}">{count}</text>'
             )
 
     bar_group("Association rules", rule_rows, rules_top)
@@ -410,7 +400,7 @@ def render_redundancy_svg(report: RedundancyReport) -> str:
 
     parts.append(
         f'<text x="{margin}" y="{pruned_top - 8}" font-size="12" font-weight="bold" '
-        f'fill="{_SVG_INK}">Highest-lift pruned rules and the simpler rule that '
+        f'fill="{design.INK}">Highest-lift pruned rules and the simpler rule that '
         f"covers each</text>"
     )
     if pruned_shown:
@@ -418,7 +408,7 @@ def render_redundancy_svg(report: RedundancyReport) -> str:
             line_y = pruned_top + 12 + 18 * i
             parts.append(
                 f'<text x="{margin}" y="{line_y}" font-size="11" '
-                f'fill="{_SVG_INK_SECONDARY}">{_svg_escape(_truncate(verdict.label))} '
+                f'fill="{design.INK_SECONDARY}">{_svg_escape(_truncate(verdict.label))} '
                 f"&#183; lift {verdict.rule.lift:.2f} &#183; conf "
                 f"{verdict.rule.confidence:.0%} &#8212; covered by "
                 f"{_svg_escape(verdict.best_alternative_label)} at "
@@ -427,23 +417,20 @@ def render_redundancy_svg(report: RedundancyReport) -> str:
     else:
         parts.append(
             f'<text x="{margin}" y="{pruned_top + 12}" font-size="11" '
-            f'fill="{_SVG_INK_SECONDARY}">None -- every rule clears positive '
+            f'fill="{design.INK_SECONDARY}">None -- every rule clears positive '
             f"improvement at these thresholds.</text>"
         )
 
-    footer_y = pruned_top + pruned_h + 18
-    parts.append(
-        f'<line x1="{margin}" y1="{footer_y}" x2="{width - margin}" '
-        f'y2="{footer_y}" stroke="{_SVG_BASELINE}" stroke-width="1"/>'
-    )
-    parts.append(
-        f'<text x="{margin}" y="{footer_y + 22}" font-size="10" '
-        f'fill="{_SVG_INK_MUTED}">SYNTHETIC DATA: all figures come from a seeded '
-        f"simulation. Redundancy is about information content -- correlation is "
-        f"not causation.</text>"
-    )
-    parts.append("</svg>")
-    return "\n".join(parts)
+    height = design.svg_footer_caption(
+        parts,
+        width=width,
+        y=pruned_top + pruned_h + 18,
+        text=(
+            "SYNTHETIC DATA: all figures come from a seeded simulation. Redundancy "
+            "is about information content -- correlation is not causation."
+        ),
+    ) + 10
+    return design.svg_close(parts, width=width, height=height)
 
 
 def write_redundancy_svg(report: RedundancyReport, path: str) -> int:

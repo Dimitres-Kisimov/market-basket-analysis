@@ -205,6 +205,9 @@ def test_csv_and_svg_writers_deterministic(baskets, tmp_path):
     svg = render_affinity_svg(report)
     assert svg.startswith("<svg")
     assert "Category affinity network" in svg
+    # The atlas plate header and the design system's non-colour channels.
+    assert "CATEGORY ATLAS" in svg and "PLATE 04 / 07" in svg
+    assert "stroke-dasharray" in svg  # community hulls (and any bridges) are dashed
     assert render_affinity_svg(report) == svg  # pure function of the report
     svg_path = tmp_path / "n.svg"
     write_affinity_svg(report, str(svg_path))

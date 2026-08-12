@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from basket import design
 from basket.apriori import apriori
 from basket.recommend import rank_cross_sell_categories
 from basket.rules import generate_rules
@@ -337,19 +338,10 @@ def write_evaluation_csv(report: EvaluationReport, path: str) -> int:
     return os.path.getsize(path)
 
 
-# SVG palette (matches the deliverables' light surface / stability chart).
-_SVG_INK = "#0b0b0b"
-_SVG_INK_SECONDARY = "#52514e"
-_SVG_INK_MUTED = "#898781"
-_SVG_SURFACE = "#fcfcfb"
-_SVG_TRACK = "#f0efec"
-_SVG_BASELINE = "#c3c2b7"
-_SVG_RULES = "#2a78d6"  # blue: the rule recommender
-_SVG_POP = "#898781"  # gray: popularity baseline
-
-
-def _svg_escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+# Visual system: shared category-atlas tokens (see basket/design.py). Two
+# series only: slot-1 blue for the rule recommender, the neutral reference
+# grey for the popularity baseline.
+_svg_escape = design.svg_escape
 
 
 def render_evaluation_svg(report: EvaluationReport) -> str:
@@ -366,63 +358,59 @@ def render_evaluation_svg(report: EvaluationReport) -> str:
     rows.append(("MRR", report.rules.mrr, report.popularity.mrr))
 
     width = 900
-    margin_left = 36
+    margin_left = design.SVG_MARGIN
     bar_x = 250
     bar_w = 380
     group_h = 54  # two bars + gap per metric
-    top_pad = 116
-    bottom_pad = 104
-    height = top_pad + group_h * len(rows) + bottom_pad
 
-    parts: list[str] = []
-    parts.append(
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" font-family="Segoe UI, Helvetica, Arial, sans-serif">'
-    )
-    parts.append(f'<rect width="{width}" height="{height}" fill="{_SVG_SURFACE}"/>')
-    parts.append(
-        f'<text x="{margin_left}" y="40" font-size="20" font-weight="bold" '
-        f'fill="{_SVG_INK}">Cross-sell recommender back-test</text>'
-    )
-    parts.append(
-        f'<text x="{margin_left}" y="64" font-size="12.5" fill="{_SVG_INK_SECONDARY}">'
-        f"Leave-one-out on {report.n_trials} held-out baskets: does the rule engine "
-        f"recover a hidden category?</text>"
-    )
-    parts.append(
-        f'<text x="{margin_left}" y="82" font-size="11" fill="{_SVG_INK_MUTED}">'
-        f"Rules mined on {report.n_train} training baskets; scored against a "
-        f"popularity baseline on the same trials. Synthetic seeded data.</text>"
+    parts = design.svg_open(width, 10)  # height patched at the end
+    header_bottom = design.svg_plate_header(
+        parts,
+        width=width,
+        plate="backtest",
+        title="Cross-sell recommender back-test",
+        subtitle=(
+            f"Leave-one-out on {report.n_trials} held-out baskets: does the rule "
+            f"engine recover a hidden category?"
+        ),
+        note=(
+            f"Rules mined on {report.n_train} training baskets; scored against a "
+            f"popularity baseline on the same trials. Synthetic seeded data."
+        ),
     )
     # Legend.
+    legend_y = header_bottom - 6
     parts.append(
-        f'<rect x="{margin_left}" y="94" width="12" height="12" rx="2" fill="{_SVG_RULES}"/>'
+        f'<rect x="{margin_left}" y="{legend_y - 10}" width="12" height="12" rx="2" '
+        f'fill="{design.SERIES_BLUE}"/>'
     )
     parts.append(
-        f'<text x="{margin_left + 18}" y="104" font-size="11" '
-        f'fill="{_SVG_INK_SECONDARY}">association rules</text>'
+        f'<text x="{margin_left + 18}" y="{legend_y}" font-size="11" '
+        f'fill="{design.INK_SECONDARY}">association rules</text>'
     )
     parts.append(
-        f'<rect x="{margin_left + 160}" y="94" width="12" height="12" rx="2" fill="{_SVG_POP}"/>'
+        f'<rect x="{margin_left + 160}" y="{legend_y - 10}" width="12" height="12" '
+        f'rx="2" fill="{design.BASELINE_SERIES}"/>'
     )
     parts.append(
-        f'<text x="{margin_left + 178}" y="104" font-size="11" '
-        f'fill="{_SVG_INK_SECONDARY}">popularity baseline</text>'
+        f'<text x="{margin_left + 178}" y="{legend_y}" font-size="11" '
+        f'fill="{design.INK_SECONDARY}">popularity baseline</text>'
     )
+    top_pad = legend_y + 22
 
     for i, (label, rules_value, pop_value) in enumerate(rows):
         group_top = top_pad + i * group_h
         parts.append(
             f'<text x="{margin_left}" y="{group_top + 18}" font-size="12" '
-            f'font-weight="bold" fill="{_SVG_INK}">{_svg_escape(label)}</text>'
+            f'font-weight="bold" fill="{design.INK}">{_svg_escape(label)}</text>'
         )
         for offset, (value, color) in enumerate(
-            ((rules_value, _SVG_RULES), (pop_value, _SVG_POP))
+            ((rules_value, design.SERIES_BLUE), (pop_value, design.BASELINE_SERIES))
         ):
             bar_y = group_top + offset * 20
             parts.append(
                 f'<rect x="{bar_x}" y="{bar_y}" width="{bar_w}" height="15" rx="3" '
-                f'fill="{_SVG_TRACK}"/>'
+                f'fill="{design.NEUTRAL_FILL}"/>'
             )
             value_w = round(bar_w * max(0.0, min(1.0, value)), 1)
             if value_w > 0:
@@ -432,7 +420,7 @@ def render_evaluation_svg(report: EvaluationReport) -> str:
                 )
             parts.append(
                 f'<text x="{bar_x + bar_w + 10}" y="{bar_y + 12}" font-size="10.5" '
-                f'fill="{_SVG_INK_SECONDARY}">{value:.3f}</text>'
+                f'fill="{design.INK_SECONDARY}">{value:.3f}</text>'
             )
 
     ratio = report.hit_rate_ratio()
@@ -440,20 +428,23 @@ def render_evaluation_svg(report: EvaluationReport) -> str:
     caption_y = top_pad + group_h * len(rows) + 26
     parts.append(
         f'<line x1="{margin_left}" y1="{caption_y - 16}" x2="{width - margin_left}" '
-        f'y2="{caption_y - 16}" stroke="{_SVG_BASELINE}" stroke-width="1"/>'
+        f'y2="{caption_y - 16}" stroke="{design.GRID}" stroke-width="1"/>'
     )
     parts.append(
         f'<text x="{margin_left}" y="{caption_y}" font-size="11" '
-        f'fill="{_SVG_INK_SECONDARY}">Rule hit-rate@{mid_k} is {ratio[mid_k]:.2f}x the '
+        f'fill="{design.INK_SECONDARY}">Rule hit-rate@{mid_k} is {ratio[mid_k]:.2f}x the '
         f"popularity baseline; recommender coverage {report.rules.coverage:.0%}.</text>"
     )
-    parts.append(
-        f'<text x="{margin_left}" y="{caption_y + 22}" font-size="10" '
-        f'fill="{_SVG_INK_MUTED}">SYNTHETIC DATA: all figures come from a seeded '
-        f"simulation. Hit-rate is predictive fit, not the causal uplift of an A/B test.</text>"
-    )
-    parts.append("</svg>")
-    return "\n".join(parts)
+    height = design.svg_footer_caption(
+        parts,
+        width=width,
+        y=caption_y + 14,
+        text=(
+            "SYNTHETIC DATA: all figures come from a seeded simulation. Hit-rate is "
+            "predictive fit, not the causal uplift of an A/B test."
+        ),
+    ) + 10
+    return design.svg_close(parts, width=width, height=height)
 
 
 def write_evaluation_svg(report: EvaluationReport, path: str) -> int:

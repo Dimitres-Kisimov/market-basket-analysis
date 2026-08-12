@@ -170,4 +170,6 @@ def test_csv_and_svg_writers_deterministic(baskets, tmp_path):
     svg = render_stability_svg(report)
     assert svg.startswith("<svg")
     assert "Rule stability" in svg
+    assert "CATEGORY ATLAS" in svg and "PLATE 06 / 07" in svg  # atlas plate header
+    assert "atlas-hatch-warning" in svg  # verdict is never colour alone
     assert render_stability_svg(report) == svg  # pure function of the report
